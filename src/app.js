@@ -776,16 +776,24 @@ function renderSettings() {
 
     <div class="section-title">AI Connections (MCP)</div>
     <div class="settings-group">
+      <div class="settings-item" id="copy-mcp-url">
+        <span class="settings-label">Copy MCP endpoint</span>
+        <span class="settings-value">Hosted URL</span>
+      </div>
       <div class="settings-item" id="copy-mcp-token">
         <span class="settings-label">Copy access token</span>
-        <span class="settings-value">For MCP clients</span>
+        <span class="settings-value">Local / stdio only</span>
       </div>
       <div class="settings-item" style="cursor:default;flex-direction:column;align-items:flex-start;gap:8px;">
-        <span class="settings-label">How to connect</span>
+        <span class="settings-label">How to connect (ChatGPT / Claude / Cursor)</span>
         <span class="settings-value" style="white-space:normal;line-height:1.45;">
-          1. Run local mcp-server with Supabase URL + anon key<br>
-          2. Paste token as ROYS_ACCESS_TOKEN<br>
-          3. Point Claude / Cursor at mcp-server/index.js<br>
+          <strong>Hosted MCP (recommended)</strong><br>
+          Endpoint: <code>https://roys-s-digital-library-mcp.onrender.com/mcp</code><br>
+          1. Add that URL as a remote / custom MCP connector<br>
+          2. Complete OAuth sign-in when prompted<br>
+          3. Use tools like search_library, create_library_item<br><br>
+          <strong>Local stdio (optional)</strong><br>
+          Copy access token → ROYS_ACCESS_TOKEN → run mcp-server/index.js<br>
           Token expires with session. Never share it.
         </span>
       </div>
@@ -795,10 +803,21 @@ function renderSettings() {
     <div class="settings-group">
       <div class="settings-item">
         <span class="settings-label">Roy's Digital Library</span>
-        <span class="settings-value">v3.4 · MCP</span>
+        <span class="settings-value">v3.9.1 · Hosted MCP</span>
       </div>
     </div>
   `;
+
+  $('#copy-mcp-url')?.addEventListener('click', async () => {
+    try {
+      const { MCP_ENDPOINT } = await import('./config.js');
+      await copyText(MCP_ENDPOINT || 'https://roys-s-digital-library-mcp.onrender.com/mcp');
+      toast('✓ MCP endpoint copied');
+    } catch (e) {
+      await copyText('https://roys-s-digital-library-mcp.onrender.com/mcp');
+      toast('✓ MCP endpoint copied');
+    }
+  });
 
   $('#copy-mcp-token')?.addEventListener('click', async () => {
     try {
@@ -808,7 +827,7 @@ function renderSettings() {
       const { data: { session } } = await sb.auth.getSession();
       if (!session?.access_token) return toast('Sign in first');
       await copyText(session.access_token);
-      toast('✓ Token copied — use as ROYS_ACCESS_TOKEN');
+      toast('✓ Token copied — for local stdio MCP only');
     } catch (e) {
       toast('Could not copy token');
     }

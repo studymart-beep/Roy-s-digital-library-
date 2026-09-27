@@ -29,3 +29,12 @@ node index.js
 
 - Only the **anon** key belongs in the browser.
 - Never commit the **service_role** key.
+
+## Hosted MCP
+
+Production MCP (ChatGPT / Claude / Cursor):
+
+`https://roys-s-digital-library-mcp.onrender.com/mcp`
+
+Requires `PUBLIC_URL` set on Render — see `DEPLOYMENT.md`.
+

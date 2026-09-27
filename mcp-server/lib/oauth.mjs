@@ -39,6 +39,7 @@ const SCOPE_LABELS = {
   'library:delete': 'Delete items and folders in your library',
   'library:share': 'Create and revoke public share links',
   openid: 'Confirm your identity',
+  offline_access: 'Keep the connection active with refresh tokens',
 };
 
 function b64url(buf) {
@@ -81,7 +82,7 @@ export function oauthMetadata(issuer) {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
-    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid'],
+    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid', 'offline_access'],
     revocation_endpoint_auth_methods_supported: ['none'],
     client_id_metadata_document_supported: true,
   };
@@ -113,8 +114,8 @@ export function validateRedirectUri(uri, allowedList) {
 }
 
 export function parseScopes(scopeStr) {
-  const allowed = new Set(['library:read', 'library:write', 'library:delete', 'library:share', 'openid']);
-  const parts = String(scopeStr || 'library:read library:write library:share library:delete')
+  const allowed = new Set(['library:read', 'library:write', 'library:delete', 'library:share', 'openid', 'offline_access']);
+  const parts = String(scopeStr || 'library:read library:write library:share library:delete offline_access')
     .split(/\s+/).filter(Boolean);
   const out = parts.filter((s) => allowed.has(s));
   if (!out.includes('library:read')) out.unshift('library:read');

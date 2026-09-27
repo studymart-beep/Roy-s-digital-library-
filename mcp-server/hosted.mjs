@@ -33,10 +33,19 @@ import {
 } from './lib/oauth.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
-const PUBLIC_URL = (process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`).replace(/\/$/, '');
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const CONFIGURED_PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/$/, '');
+const PUBLIC_URL = CONFIGURED_PUBLIC_URL || `http://127.0.0.1:${PORT}`;
 const IS_LOOPBACK_PUBLIC_URL = /^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?$/i.test(PUBLIC_URL);
+
 if (!IS_LOOPBACK_PUBLIC_URL && !PUBLIC_URL.startsWith('https://')) {
   throw new Error('PUBLIC_URL must use https:// for hosted deployments');
+}
+if (IS_PRODUCTION && IS_LOOPBACK_PUBLIC_URL) {
+  throw new Error(
+    'PUBLIC_URL is required in production and must be the Render HTTPS origin. ' +
+    'Set PUBLIC_URL=https://roys-s-digital-library-mcp.onrender.com'
+  );
 }
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -88,6 +97,13 @@ function send(res, code, body, reqId, extraHeaders = {}) {
   if (typeof body === 'string') headers['Content-Type'] = extraHeaders['Content-Type'] || 'text/html; charset=utf-8';
   res.writeHead(code, headers);
   res.end(data);
+}
+
+function sendHtml(res, code, html, reqId, extraHeaders = {}) {
+  return send(res, code, html, reqId, {
+    'Content-Type': 'text/html; charset=utf-8',
+    ...extraHeaders,
+  });
 }
 
 function readBody(req) {
@@ -228,7 +244,7 @@ function protectedResourceMetadata() {
   return {
     resource: `${PUBLIC_URL}/mcp`,
     authorization_servers: [PUBLIC_URL],
-    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid'],
+    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid', 'offline_access'],
     bearer_methods_supported: ['header'],
   };
 }
@@ -249,6 +265,40 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    // ── Service landing page ────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/') {
+      const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roy's Digital Library MCP</title>
+<style>
+body{font-family:Inter,system-ui,sans-serif;max-width:760px;margin:0 auto;padding:48px 24px;background:#faf5ea;color:#1e2436}
+.card{background:#fffdf8;border:1px solid #e7dcc4;border-radius:18px;padding:28px;box-shadow:0 8px 30px rgba(30,36,54,.08)}
+h1{margin:0 0 8px}p{line-height:1.6;color:#5b574c}code{background:#f1eadb;padding:3px 7px;border-radius:6px}
+.ok{font-weight:700}.links{display:grid;gap:10px;margin-top:20px}
+a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Roy's Digital Library MCP</h1>
+<p>Hosted Model Context Protocol server for Roy's Digital Library.</p>
+<p class="ok">✓ Hosted endpoint is configured</p>
+<p>MCP endpoint: <code>${PUBLIC_URL}/mcp</code></p>
+<div class="links">
+<a href="/health">Health check</a>
+<a href="/ready">Readiness check</a>
+<a href="/.well-known/oauth-authorization-server">OAuth discovery</a>
+<a href="/.well-known/oauth-protected-resource">Protected resource metadata</a>
+</div>
+</div>
+</body>
+</html>`;
+      return sendHtml(res, 200, html, reqId);
+    }
+
     // ── Health ──────────────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/health') {
       return send(res, 200, { status: 'ok', service: 'roys-mcp', version: '3.9.1' }, reqId);
@@ -454,14 +504,6 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { tools: TOOL_DEFS }, reqId);
     }
 
-    if (req.method === 'GET' && url.pathname === '/') {
-      return send(res, 200, {
-        name: "Roy's Digital Library MCP",
-        version: '3.9.1',
-        oauth: `${PUBLIC_URL}/.well-known/oauth-authorization-server`,
-        mcp: `${PUBLIC_URL}/mcp`,
-      }, reqId);
-    }
 
     send(res, 404, { code: 'NOT_FOUND', message: 'Not found' }, reqId);
   } catch (err) {
