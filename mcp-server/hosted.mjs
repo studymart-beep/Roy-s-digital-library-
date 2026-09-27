@@ -353,7 +353,7 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
         scope: q.get('scope'),
         codeChallenge: q.get('code_challenge'),
       });
-      return send(res, 200, html, reqId, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'" });
+      return send(res, 200, html, reqId, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self' https://roy-s-digital-library.onrender.com" });
     }
 
     if (url.pathname === '/oauth/authorize' && req.method === 'POST') {
