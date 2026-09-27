@@ -1,13 +1,10 @@
 /**
- * Roy's Digital Library — Hosted MCP (v3.8)
+ * Roy's Digital Library — Hosted MCP (v3.9.1)
  *
  * - OAuth 2.1 Authorization Code + PKCE (S256)
  * - MCP Streamable HTTP: POST /mcp (JSON-RPC)
  * - Shared tools: lib/tools.mjs
- * - Identity: OAuth-issued access token only (resolveOAuthBearer) → never
- *   a raw Supabase JWT, and never a client-supplied user_id. Raw Supabase
- *   JWTs are accepted only by the local/stdio server (mcp-server/index.js),
- *   which is not reachable over the network.
+ * - Identity: OAuth-issued access token only (resolveOAuthBearer)
  */
 
 import http from 'http';
@@ -29,7 +26,6 @@ import {
   resolveOAuthBearer,
   loginWithPassword,
   authorizePageHtml,
-  parseScopes,
 } from './lib/oauth.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -44,9 +40,10 @@ if (!IS_LOOPBACK_PUBLIC_URL && !PUBLIC_URL.startsWith('https://')) {
 if (IS_PRODUCTION && IS_LOOPBACK_PUBLIC_URL) {
   throw new Error(
     'PUBLIC_URL is required in production and must be the Render HTTPS origin. ' +
-    'Set PUBLIC_URL=https://roys-s-digital-library-mcp.onrender.com'
+      'Set PUBLIC_URL=https://roy-s-digital-library.onrender.com'
   );
 }
+
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
@@ -54,6 +51,10 @@ const OAUTH_REDIRECT_ALLOWLIST = (process.env.OAUTH_REDIRECT_ALLOWLIST || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+
+/** CSP for OAuth HTML pages — form-action * required so Claude/ChatGPT in-app browsers can POST */
+const OAUTH_HTML_CSP =
+  "default-src 'self'; style-src 'unsafe-inline'; form-action *; base-uri 'self'";
 
 const rateBuckets = new Map();
 function rateLimit(key, max = 60, windowMs = 60_000) {
@@ -90,11 +91,14 @@ function send(res, code, body, reqId, extraHeaders = {}) {
   };
   if (CORS_ORIGIN) {
     headers['Access-Control-Allow-Origin'] = CORS_ORIGIN;
-    headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, X-Request-Id, Mcp-Session-Id';
+    headers['Access-Control-Allow-Headers'] =
+      'Authorization, Content-Type, X-Request-Id, Mcp-Session-Id';
     headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, DELETE';
   }
   const data = typeof body === 'string' ? body : JSON.stringify(body);
-  if (typeof body === 'string') headers['Content-Type'] = extraHeaders['Content-Type'] || 'text/html; charset=utf-8';
+  if (typeof body === 'string') {
+    headers['Content-Type'] = extraHeaders['Content-Type'] || 'text/html; charset=utf-8';
+  }
   res.writeHead(code, headers);
   res.end(data);
 }
@@ -146,20 +150,13 @@ function bearer(req) {
 }
 
 async function toolContextFromAuth(identity) {
-  // Prefer Supabase JWT for RLS; for opaque OAuth tokens use anon + user filter in tools
   let accessToken = identity.supabaseAccessToken || null;
-  if (!accessToken) {
-    // Opaque OAuth token: tools still filter by user.id; create client with anon only
-    // Tools use user.id from context for .eq('user_id', userId)
-    accessToken = null;
-  }
   const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     global: accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {},
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const user = { id: identity.userId, email: identity.email };
   const baseEnt = await getUserEntitlement(user.id);
-  // Intersect with OAuth scopes
   const oauthScopes = new Set(identity.scope || []);
   const scopes = {};
   for (const s of Object.keys(baseEnt.scopes || {})) {
@@ -169,7 +166,6 @@ async function toolContextFromAuth(identity) {
 }
 
 const DESTRUCTIVE_TOOLS = new Set(['delete_library_item', 'delete_folder']);
-
 const TOOL_DEFS = Object.entries(TOOL_SCOPES).map(([name, scope]) => ({
   name,
   description: `Roy library tool (${scope})`,
@@ -196,14 +192,10 @@ async function handleMcpJsonRpc(msg, ctx, reqId) {
     };
   }
   if (method === 'notifications/initialized' || method === 'initialized') {
-    return null; // notification
+    return null;
   }
   if (method === 'tools/list') {
-    return {
-      jsonrpc: '2.0',
-      id,
-      result: { tools: TOOL_DEFS },
-    };
+    return { jsonrpc: '2.0', id, result: { tools: TOOL_DEFS } };
   }
   if (method === 'tools/call') {
     const name = params.name;
@@ -224,7 +216,12 @@ async function handleMcpJsonRpc(msg, ctx, reqId) {
         jsonrpc: '2.0',
         id,
         result: {
-          content: [{ type: 'text', text: JSON.stringify({ code: err.code || 'INTERNAL_ERROR', message: err.message }) }],
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ code: err.code || 'INTERNAL_ERROR', message: err.message }),
+            },
+          ],
           isError: true,
         },
       };
@@ -244,7 +241,14 @@ function protectedResourceMetadata() {
   return {
     resource: `${PUBLIC_URL}/mcp`,
     authorization_servers: [PUBLIC_URL],
-    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid', 'offline_access'],
+    scopes_supported: [
+      'library:read',
+      'library:write',
+      'library:delete',
+      'library:share',
+      'openid',
+      'offline_access',
+    ],
     bearer_methods_supported: ['header'],
   };
 }
@@ -265,7 +269,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    // ── Service landing page ────────────────────────────────
+    // Landing
     if (req.method === 'GET' && url.pathname === '/') {
       const html = `<!doctype html>
 <html lang="en">
@@ -299,32 +303,36 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
       return sendHtml(res, 200, html, reqId);
     }
 
-    // ── Health ──────────────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/health') {
       return send(res, 200, { status: 'ok', service: 'roys-mcp', version: '3.9.1' }, reqId);
     }
+
     if (req.method === 'GET' && url.pathname === '/ready') {
       const configured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-      return send(res, configured ? 200 : 503, {
-        ready: configured,
-        supabase_configured: configured,
-        oauth: true,
-        mcp_streamable_http: true,
-        public_url: PUBLIC_URL,
-      }, reqId);
+      return send(
+        res,
+        configured ? 200 : 503,
+        {
+          ready: configured,
+          supabase_configured: configured,
+          oauth: true,
+          mcp_streamable_http: true,
+          public_url: PUBLIC_URL,
+        },
+        reqId
+      );
     }
 
-    // RFC 9728 Protected Resource Metadata for remote MCP OAuth discovery.
-    if (req.method === 'GET' && (
-      url.pathname === '/.well-known/oauth-protected-resource' ||
-      url.pathname === '/.well-known/oauth-protected-resource/mcp'
-    )) {
+    if (
+      req.method === 'GET' &&
+      (url.pathname === '/.well-known/oauth-protected-resource' ||
+        url.pathname === '/.well-known/oauth-protected-resource/mcp')
+    ) {
       return send(res, 200, protectedResourceMetadata(), reqId, {
         'Access-Control-Allow-Origin': '*',
       });
     }
 
-    // ── OAuth discovery ─────────────────────────────────────
     if (
       req.method === 'GET' &&
       (url.pathname === '/.well-known/oauth-authorization-server' ||
@@ -333,7 +341,7 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
       return send(res, 200, oauthMetadata(PUBLIC_URL), reqId);
     }
 
-    // ── OAuth authorize (GET form / POST login) ──────────────
+    // OAuth authorize GET
     if (url.pathname === '/oauth/authorize' && req.method === 'GET') {
       const q = url.searchParams;
       const redirectUri = q.get('redirect_uri') || '';
@@ -353,9 +361,12 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
         scope: q.get('scope'),
         codeChallenge: q.get('code_challenge'),
       });
-      return send(res, 200, html, reqId, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self' https://roy-s-digital-library.onrender.com" });
+      return sendHtml(res, 200, html, reqId, {
+        'Content-Security-Policy': OAUTH_HTML_CSP,
+      });
     }
 
+    // OAuth authorize POST
     if (url.pathname === '/oauth/authorize' && req.method === 'POST') {
       rateLimit(`oauth-auth:${req.socket.remoteAddress}`, 20);
       const body = await readBody(req);
@@ -376,8 +387,6 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
           supabaseAccessToken: user.accessToken,
           supabaseRefreshToken: user.refreshToken,
         });
-        // Prefer attaching Supabase session token into opaque exchange later:
-        // store mapping via issuing with user already verified
         const redirect = new URL(body.redirect_uri);
         redirect.searchParams.set('code', code);
         if (body.state) redirect.searchParams.set('state', body.state);
@@ -398,11 +407,13 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
           codeChallenge: body.code_challenge,
           error: err.message || 'Login failed',
         });
-        return send(res, 401, html, reqId, { 'Content-Type': 'text/html; charset=utf-8' });
+        return sendHtml(res, 401, html, reqId, {
+          'Content-Security-Policy': OAUTH_HTML_CSP,
+        });
       }
     }
 
-    // ── OAuth token ─────────────────────────────────────────
+    // OAuth token
     if (url.pathname === '/oauth/token' && req.method === 'POST') {
       rateLimit(`oauth-token:${req.socket.remoteAddress}`, 30);
       const body = await readBody(req);
@@ -426,27 +437,25 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
         }
         return send(res, 400, { error: 'unsupported_grant_type' }, reqId);
       } catch (err) {
-        return send(res, 400, { error: err.code || 'invalid_grant', error_description: err.message }, reqId);
+        return send(
+          res,
+          400,
+          { error: err.code || 'invalid_grant', error_description: err.message },
+          reqId
+        );
       }
     }
 
-    // ── OAuth revoke ────────────────────────────────────────
+    // OAuth revoke
     if (url.pathname === '/oauth/revoke' && req.method === 'POST') {
       rateLimit(`oauth-revoke:${req.socket.remoteAddress}`, 30);
       const body = await readBody(req);
-      // Per RFC 7009: respond 200 whether or not the token was real, so a
-      // caller can't use this endpoint to probe for valid tokens. What we
-      // fixed is that revokeToken() now actually checks the store instead
-      // of unconditionally treating any input as a successful revocation —
-      // the response just doesn't leak that distinction to the caller.
       const result = revokeToken(body.token);
       log({ reqId, event: 'oauth_revoke', actually_revoked: result.revoked, ms: Date.now() - start });
       return send(res, 200, { revoked: true }, reqId);
     }
 
-    // ── MCP Streamable HTTP ─────────────────────────────────
-    // Primary: POST /mcp  (JSON-RPC initialize | tools/list | tools/call)
-    // Legacy:  POST /mcp/rpc, POST /mcp/tools/:name
+    // MCP Streamable HTTP
     if (req.method === 'POST' && (url.pathname === '/mcp' || url.pathname === '/mcp/rpc')) {
       const token = bearer(req);
       let identity;
@@ -463,24 +472,34 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
       const ctx = await toolContextFromAuth(identity);
       const body = await readBody(req);
 
-      // Batch array support
       if (Array.isArray(body)) {
         const out = [];
         for (const msg of body) {
           const r = await handleMcpJsonRpc(msg, ctx, reqId);
           if (r) out.push(r);
         }
-        log({ reqId, event: 'mcp_batch', n: body.length, user: identity.userId.slice(0, 8), ms: Date.now() - start });
+        log({
+          reqId,
+          event: 'mcp_batch',
+          n: body.length,
+          user: identity.userId.slice(0, 8),
+          ms: Date.now() - start,
+        });
         return send(res, 200, out, reqId);
       }
 
       const r = await handleMcpJsonRpc(body, ctx, reqId);
       if (r === null) return send(res, 202, {}, reqId);
-      log({ reqId, event: 'mcp', method: body.method, user: identity.userId.slice(0, 8), ms: Date.now() - start });
+      log({
+        reqId,
+        event: 'mcp',
+        method: body.method,
+        user: identity.userId.slice(0, 8),
+        ms: Date.now() - start,
+      });
       return send(res, 200, r, reqId);
     }
 
-    // Legacy tool path
     if (req.method === 'POST' && url.pathname.startsWith('/mcp/tools/')) {
       const name = decodeURIComponent(url.pathname.slice('/mcp/tools/'.length));
       const token = bearer(req);
@@ -504,16 +523,21 @@ a{color:#806814;text-decoration:none}a:hover{text-decoration:underline}
       return send(res, 200, { tools: TOOL_DEFS }, reqId);
     }
 
-
     send(res, 404, { code: 'NOT_FOUND', message: 'Not found' }, reqId);
   } catch (err) {
     const code = err.code || 'INTERNAL_ERROR';
     const status =
-      code === 'UNAUTHORIZED' || code === 'access_denied' ? 401 :
-      code === 'FORBIDDEN' ? 403 :
-      code === 'VALIDATION_ERROR' || code === 'invalid_request' ? 400 :
-      code === 'RATE_LIMITED' ? 429 :
-      code === 'NOT_FOUND' ? 404 : 500;
+      code === 'UNAUTHORIZED' || code === 'access_denied'
+        ? 401
+        : code === 'FORBIDDEN'
+          ? 403
+          : code === 'VALIDATION_ERROR' || code === 'invalid_request'
+            ? 400
+            : code === 'RATE_LIMITED'
+              ? 429
+              : code === 'NOT_FOUND'
+                ? 404
+                : 500;
     log({ reqId, status, code, message: err.message, ms: Date.now() - start });
     send(res, status, { code, message: err.message || 'Error' }, reqId);
   }
