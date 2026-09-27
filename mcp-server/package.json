@@ -1,0 +1,23 @@
+{
+  "name": "roys-prompt-library-mcp",
+  "version": "3.9.1",
+  "description": "MCP server for Roy's Digital Library — user-scoped access to prompts, research, strategies, and folders",
+  "type": "module",
+  "bin": {
+    "roys-mcp": "./index.js"
+  },
+  "main": "index.js",
+  "scripts": {
+    "start": "node hosted.mjs",
+    "hosted": "node hosted.mjs",
+    "stdio": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@supabase/supabase-js": "^2.49.1",
+    "zod": "^3.24.2"
+  }
+}

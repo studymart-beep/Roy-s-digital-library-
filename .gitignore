@@ -1,0 +1,13 @@
+node_modules/
+mcp-server/node_modules/
+.env
+.env.local
+*.log
+.DS_Store
+dist/
+.vercel
+.netlify
+
+# OAuth token store (v3.9+) — contains live session data, never commit
+mcp-server/data/
+*.tmp-*

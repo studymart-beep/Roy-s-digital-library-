@@ -1,0 +1,13 @@
+{
+  "name": "roys-prompt-library",
+  "version": "3.9.1",
+  "description": "Roy's personal Prompt & Asset Library — mobile-first PWA",
+  "scripts": {
+    "start": "npx serve -l 3000",
+    "dev": "npx serve -l 3000",
+    "smoke:mcp": "node scripts/production-smoke.mjs"
+  },
+  "keywords": ["prompts", "pwa", "library"],
+  "author": "Roy",
+  "license": "MIT"
+}

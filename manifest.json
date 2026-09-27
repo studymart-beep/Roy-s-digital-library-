@@ -1,0 +1,25 @@
+{
+  "name": "Roy's Digital Library",
+  "short_name": "Roy's Library",
+  "description": "Personal prompt & asset library — your digital command center",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf5ea",
+  "theme_color": "#faf5ea",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"]
+}
