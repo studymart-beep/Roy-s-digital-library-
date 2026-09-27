@@ -788,7 +788,7 @@ function renderSettings() {
         <span class="settings-label">How to connect (ChatGPT / Claude / Cursor)</span>
         <span class="settings-value" style="white-space:normal;line-height:1.45;">
           <strong>Hosted MCP (recommended)</strong><br>
-          Endpoint: <code>https://roys-s-digital-library-mcp.onrender.com/mcp</code><br>
+          Endpoint: <code>https://roy-s-digital-library.onrender.com/mcp</code><br>
           1. Add that URL as a remote / custom MCP connector<br>
           2. Complete OAuth sign-in when prompted<br>
           3. Use tools like search_library, create_library_item<br><br>
@@ -811,10 +811,10 @@ function renderSettings() {
   $('#copy-mcp-url')?.addEventListener('click', async () => {
     try {
       const { MCP_ENDPOINT } = await import('./config.js');
-      await copyText(MCP_ENDPOINT || 'https://roys-s-digital-library-mcp.onrender.com/mcp');
+      await copyText(MCP_ENDPOINT || 'https://roy-s-digital-library.onrender.com/mcp');
       toast('✓ MCP endpoint copied');
     } catch (e) {
-      await copyText('https://roys-s-digital-library-mcp.onrender.com/mcp');
+      await copyText('https://roys-s-digital-library.onrender.com/mcp');
       toast('✓ MCP endpoint copied');
     }
   });
