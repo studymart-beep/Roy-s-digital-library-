@@ -1,5 +1,21 @@
 # Roy’s Digital Library — MCP Server
 
+## Hosted endpoint (production)
+
+| | |
+|--|--|
+| **Public origin** | `https://roys-s-digital-library-mcp.onrender.com` |
+| **MCP URL** | `https://roys-s-digital-library-mcp.onrender.com/mcp` |
+
+Set on Render: `PUBLIC_URL=https://roys-s-digital-library-mcp.onrender.com`  
+(without this, discovery links fall back to localhost).
+
+Connect ChatGPT / Claude / Cursor to the **MCP URL** above (OAuth).  
+See root `DEPLOYMENT.md` for full Render env list.
+
+---
+
+
 Connect ChatGPT / Claude / Cursor / other MCP clients to **your** library.
 
 ## Security model

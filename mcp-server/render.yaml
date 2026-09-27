@@ -1,0 +1,27 @@
+# Render Blueprint — deploy only the hosted MCP service
+# Dashboard: New → Blueprint → connect this repo → select mcp-server/render.yaml
+# Or create a Web Service manually with root directory: mcp-server
+
+services:
+  - type: web
+    name: roys-s-digital-library-mcp
+    runtime: node
+    rootDir: mcp-server
+    buildCommand: npm install --omit=dev
+    startCommand: node hosted.mjs
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUBLIC_URL
+        value: https://roys-s-digital-library-mcp.onrender.com
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: MCP_OAUTH_STORE_KEY
+        generateValue: true
+      - key: OAUTH_REDIRECT_ALLOWLIST
+        value: https://chatgpt.com,https://claude.ai,https://claude.ai/api/mcp/auth_callback
+      - key: MCP_OAUTH_STORE_PATH
+        value: /tmp/oauth-store.json

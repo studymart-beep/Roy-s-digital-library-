@@ -1,0 +1,10 @@
+# Deploy MCP from monorepo root: set Root Directory = mcp-server in Render UI
+# Or use mcp-server/render.yaml as a Blueprint.
+# Required env on the Web Service:
+#   PUBLIC_URL=https://roys-s-digital-library-mcp.onrender.com
+#   SUPABASE_URL=...
+#   SUPABASE_ANON_KEY=...
+#   MCP_OAUTH_STORE_KEY=<openssl rand -base64 32>
+#   OAUTH_REDIRECT_ALLOWLIST=https://chatgpt.com,https://claude.ai,https://claude.ai/api/mcp/auth_callback
+# Start command: node hosted.mjs
+# Health check path: /health

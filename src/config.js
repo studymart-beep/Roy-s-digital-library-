@@ -13,3 +13,8 @@ export const CLOUD_ENABLED =
   SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY' &&
   SUPABASE_URL.startsWith('https://') &&
   SUPABASE_ANON_KEY.startsWith('eyJ');
+
+// Hosted MCP (Render) — used by Settings UI and client docs
+export const MCP_HOSTED_URL = 'https://roys-s-digital-library-mcp.onrender.com';
+export const MCP_ENDPOINT = MCP_HOSTED_URL + '/mcp';
+
