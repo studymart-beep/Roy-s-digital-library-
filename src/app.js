@@ -109,7 +109,135 @@ const ITEM_TYPES = [
   { id: 'template', label: 'Template' },
   { id: 'experiment', label: 'Experiment' },
   { id: 'product_asset', label: 'Product Asset' },
+  { id: 'spreadsheet', label: 'Spreadsheet' },
+  { id: 'document', label: 'Document' },
+  { id: 'presentation', label: 'Presentation' },
 ];
+
+function parseSpreadsheetContent(content) {
+  try {
+    const data = JSON.parse(content || '');
+    if (data && data.kind === 'spreadsheet' && Array.isArray(data.columns) && Array.isArray(data.rows)) {
+      return {
+        columns: data.columns.map(String),
+        rows: data.rows.map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [String(r)])),
+        notes: data.notes || '',
+      };
+    }
+  } catch (_) {}
+  return { columns: ['A', 'B', 'C'], rows: [['', '', '']], notes: '' };
+}
+
+function encodeSpreadsheetContent({ columns, rows, notes }) {
+  return JSON.stringify({ v: 1, kind: 'spreadsheet', columns, rows, notes: notes || '' });
+}
+
+function parsePresentationContent(content) {
+  try {
+    const data = JSON.parse(content || '');
+    if (data?.kind === 'presentation' && Array.isArray(data.slides)) {
+      return { slides: data.slides, notes: data.notes || '' };
+    }
+  } catch (_) {}
+  return { slides: [{ title: 'Slide 1', body: String(content || ''), bullets: [], notes: '' }], notes: '' };
+}
+
+function encodePresentationContent({ slides, notes }) {
+  return JSON.stringify({ v: 1, kind: 'presentation', slides, notes: notes || '' });
+}
+
+function parseDocumentContent(content) {
+  try {
+    const data = JSON.parse(content || '');
+    if (data?.kind === 'document') return { format: data.format || 'markdown', body: String(data.body || '') };
+  } catch (_) {}
+  return { format: 'markdown', body: String(content || '') };
+}
+
+function encodeDocumentContent({ body, format }) {
+  return JSON.stringify({ v: 1, kind: 'document', format: format || 'markdown', body: body || '' });
+}
+
+/** Minimal markdown → HTML for document preview */
+function simpleMarkdown(md) {
+  let h = escapeHtml(md || '');
+  h = h.replace(/^### (.*)$/gm, '<h3>$1</h3>').replace(/^## (.*)$/gm, '<h2>$1</h2>').replace(/^# (.*)$/gm, '<h1>$1</h1>');
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>');
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/^\- (.*)$/gm, '<li>$1</li>');
+  h = h.replace(/(<li>.*<\/li>\n?)+/g, (m) => '<ul>' + m + '</ul>');
+  h = h.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>');
+  return '<p>' + h + '</p>';
+}
+
+function sheetToCsv(columns, rows) {
+  const esc = (c) => {
+    const s = String(c ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  return [columns.map(esc).join(','), ...rows.map((r) => columns.map((_, i) => esc(r[i])).join(','))].join('\n');
+}
+
+function parseCsv(text) {
+  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.length);
+  if (!lines.length) return { columns: ['A'], rows: [['']] };
+  const parseLine = (line) => {
+    const out = []; let cur = ''; let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') q = false;
+        else cur += ch;
+      } else {
+        if (ch === '"') q = true;
+        else if (ch === ',') { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+    }
+    out.push(cur);
+    return out;
+  };
+  const rows = lines.map(parseLine);
+  const width = Math.max(...rows.map((r) => r.length));
+  const columns = rows[0].map((c, i) => c || `Col ${i + 1}`);
+  const dataRows = rows.slice(1).map((r) => {
+    const copy = [...r];
+    while (copy.length < width) copy.push('');
+    return copy;
+  });
+  return { columns, rows: dataRows.length ? dataRows : [columns.map(() => '')] };
+}
+
+function buildBarChartSvg(columns, rows, valueColIndex = 1, labelColIndex = 0) {
+  const points = rows.map((r) => ({
+    label: String(r[labelColIndex] ?? '').slice(0, 20),
+    value: parseFloat(String(r[valueColIndex] ?? '').replace(/[^0-9.\-]/g, '')),
+  })).filter((p) => !Number.isNaN(p.value));
+  if (!points.length) return '<p style="color:var(--text-muted);font-size:13px;">No numeric data in the selected column for a chart.</p>';
+  const max = Math.max(...points.map((p) => Math.abs(p.value)), 1);
+  const w = Math.max(320, points.length * 48);
+  const h = 180;
+  const barW = Math.min(36, (w - 40) / points.length - 8);
+  const bars = points.map((p, i) => {
+    const bh = (Math.abs(p.value) / max) * (h - 40);
+    const x = 30 + i * ((w - 40) / points.length);
+    const y = h - 20 - bh;
+    return `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" fill="#c9a227" rx="4"/><text x="${x + barW / 2}" y="${h - 6}" text-anchor="middle" font-size="9" fill="#6b6250">${escapeHtml(p.label)}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" style="max-height:200px;background:#fffdf8;border-radius:12px;border:1px solid var(--border);">${bars}</svg>`;
+}
+
+
+function spreadsheetPreviewHtml(item) {
+  const { columns, rows } = parseSpreadsheetContent(item.content);
+  const previewRows = rows.slice(0, 4);
+  const head = columns.map((c) => `<th style="padding:4px 8px;border:1px solid var(--border);background:var(--surface-2,#f3eee3);font-size:11px;text-align:left;">${escapeHtml(c)}</th>`).join('');
+  const body = previewRows.map((r) => `<tr>${columns.map((_, i) => `<td style="padding:4px 8px;border:1px solid var(--border);font-size:12px;">${escapeHtml(r[i] ?? '')}</td>`).join('')}</tr>`).join('');
+  const more = rows.length > 4 ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">+${rows.length - 4} more rows · ${columns.length} columns</div>` : `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">${rows.length} rows · ${columns.length} columns</div>`;
+  return `<div class="sheet-preview" style="overflow:auto;max-width:100%;"><table style="border-collapse:collapse;width:100%;min-width:200px;"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>${more}</div>`;
+}
+
 
 function itemTypeLabel(type) {
   return (ITEM_TYPES.find(t => t.id === type) || { label: type || 'Item' }).label;
@@ -328,9 +456,9 @@ async function signUp(email, password) {
 async function resetPassword(email) {
   const supabase = getSupabase();
   if (!email) throw new Error('Enter your email first.');
-  const redirectTo = typeof location !== 'undefined' ? location.origin + '/' : undefined;
-  const { error } = await supabase.auth.resetPasswordForEmail(email, redirectTo ? { redirectTo } : undefined);
-  if (error) throw new Error(friendlyAuthError(error));
+  const redirectTo = (typeof window !== 'undefined' ? window.location.origin : '') + '/';
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw error;
 }
 
 async function signInWithGoogle() {
@@ -468,6 +596,9 @@ function renderAuth() {
         <div class="btn-row">
           <button class="btn btn-secondary" id="btn-signup" style="flex:1;">Create Account</button>
         </div>
+        <p style="text-align:center;margin:10px 0 0;">
+          <button type="button" id="btn-forgot" style="background:none;border:0;color:var(--accent,#b8901f);font-size:13px;cursor:pointer;text-decoration:underline;">Forgot password?</button>
+        </p>
         <div class="auth-divider"><span>or</span></div>
         <button class="btn btn-secondary" id="btn-google" style="width:100%;">
           Continue with Google
@@ -503,8 +634,23 @@ function renderAuth() {
     try {
       await signUp($('#auth-email').value.trim(), $('#auth-password').value);
       toast('Check your email to confirm, then sign in');
+      showErr('Confirmation email sent. Open the link in your inbox, then sign in.');
     } catch (e) {
       showErr(e.message || 'Sign up failed');
+    }
+  });
+  $('#btn-forgot')?.addEventListener('click', async () => {
+    const email = $('#auth-email').value.trim();
+    if (!email) {
+      showErr('Enter your email above, then tap Forgot password.');
+      return;
+    }
+    try {
+      await resetPassword(email);
+      toast('Password reset email sent');
+      showErr('Check your inbox for the reset link. After resetting, sign in here.');
+    } catch (e) {
+      showErr(e.message || 'Could not send reset email');
     }
   });
   $('#btn-google')?.addEventListener('click', async () => {
@@ -521,14 +667,68 @@ function renderAuth() {
 }
 
 // ── Views (preserved from original) ───────────────────────────
+
+/** Sort key for prompts / library items. Preference stored in meta. */
+function sortItems(items, mode) {
+  const arr = [...(items || [])];
+  const used = (x) => x.lastUsedAt || 0;
+  const upd = (x) => x.updatedAt || x.createdAt || 0;
+  const name = (x) => (x.title || x.name || '').toLowerCase();
+  switch (mode) {
+    case 'oldest':
+      return arr.sort((a, b) => upd(a) - upd(b));
+    case 'name':
+      return arr.sort((a, b) => name(a).localeCompare(name(b)));
+    case 'most_used':
+      return arr.sort((a, b) => (b.useCount || 0) - (a.useCount || 0) || used(b) - used(a));
+    case 'recent_used':
+      return arr.sort((a, b) => used(b) - used(a) || upd(b) - upd(a));
+    case 'newest':
+    default:
+      return arr.sort((a, b) => upd(b) - upd(a));
+  }
+}
+
+function sortControlHtml(current) {
+  const opts = [
+    ['newest', 'Newest'],
+    ['oldest', 'Oldest'],
+    ['name', 'Name A–Z'],
+    ['recent_used', 'Recently used'],
+    ['most_used', 'Most used'],
+  ];
+  return `<div class="sort-bar" style="display:flex;align-items:center;gap:8px;margin:0 0 12px;">
+    <label style="font-size:13px;color:var(--text-muted);">Sort</label>
+    <select id="sort-mode" style="flex:1;max-width:200px;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);">
+      ${opts.map(([v, l]) => `<option value="${v}" ${current === v ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+  </div>`;
+}
+
+async function getSortMode() {
+  return (await getMeta('sortMode')) || 'newest';
+}
+
+async function setSortMode(mode) {
+  await setMeta('sortMode', mode);
+}
+
+function bindSortControl(rerender) {
+  const sel = $('#sort-mode');
+  if (!sel) return;
+  sel.addEventListener('change', async () => {
+    await setSortMode(sel.value);
+    if (typeof rerender === 'function') rerender();
+  });
+}
+
 async function renderHome() {
   const folders = await getAllFolders();
   const prompts = await getAllPrompts();
   const libItems = await getAllLibraryItems();
   const rootFolders = folders.filter(f => f.parentId === 'root');
-  const recent = [...prompts, ...libItems]
-    .sort((a, b) => (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0))
-    .slice(0, 8);
+  const sortMode = await getSortMode();
+  const recent = sortItems([...prompts, ...libItems], sortMode === 'newest' ? 'recent_used' : sortMode).slice(0, 8);
   const favs = [...prompts.filter(p => p.isFavorite), ...libItems.filter(i => i.isFavorite)].slice(0, 4);
 
   const main = $('#main');
@@ -555,7 +755,7 @@ async function renderHome() {
         <div class="section-title">Folders</div>
         ${rootFolders.length === 0 ? '<div class="empty-state"><p>Your library is empty. Tap the gold <strong>+</strong> button at the bottom to add a folder or prompt.</p></div>' : ''}
         ${rootFolders.map(f => renderFolderCard(f, folders, prompts)).join('')}
-        ${favs.length ? `<div class="section-title">Favorites</div><div class="prompts-grid">${favs.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
+        ${sortControlHtml(sortMode)}${favs.length ? `<div class="section-title">Favorites</div><div class="prompts-grid">${favs.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
         ${recent.length ? `<div class="section-title">Recent activity</div><div class="prompts-grid">${recent.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
       </div>
     </div>
@@ -563,6 +763,7 @@ async function renderHome() {
   bindFolderCards();
   bindPromptCards();
   bindLibraryCards();
+  bindSortControl(() => renderHome());
   $all('.sidebar-folder').forEach(el => el.addEventListener('click', () => navigateToFolder(el.dataset.folderId)));
 }
 
@@ -630,13 +831,18 @@ function renderLibraryCard(item) {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="${item.isFavorite ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
         </button>
       </div>
-      <div class="prompt-body" data-action="expand">
-        ${escapeHtml(item.content)}
-        <div class="prompt-fade"></div>
+      <div class="prompt-body" data-action="${type === 'spreadsheet' ? 'open-sheet' : type === 'presentation' ? 'open-deck' : type === 'document' ? 'open-doc' : 'expand'}">
+        ${type === 'spreadsheet' ? spreadsheetPreviewHtml(item)
+          : type === 'presentation' ? `<div style="font-size:13px;color:var(--text-secondary);">${escapeHtml((parsePresentationContent(item.content).slides[0] || {}).title || 'Deck')} · ${parsePresentationContent(item.content).slides.length} slides</div>`
+          : type === 'document' ? `<div style="font-size:13px;color:var(--text-secondary);">${escapeHtml((parseDocumentContent(item.content).body || '').slice(0, 160))}…</div>`
+          : (escapeHtml(item.content) + '<div class="prompt-fade"></div>')}
       </div>
       ${tags ? `<div class="prompt-tags">${tags}</div>` : ''}
       ${safeSourceUrl(item.sourceUrl) ? `<div class="prompt-tags"><a class="tag" href="${escapeHtml(safeSourceUrl(item.sourceUrl))}" target="_blank" rel="noopener noreferrer">Source</a></div>` : ''}
       <div class="prompt-actions">
+        ${type === 'spreadsheet' ? '<button data-action="open-sheet">Open</button>' : ''}
+        ${type === 'presentation' ? '<button data-action="open-deck">Open</button>' : ''}
+        ${type === 'document' ? '<button data-action="open-doc">Open</button>' : ''}
         <button class="copy-btn" data-action="copy-lib">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           Copy
@@ -656,13 +862,15 @@ async function renderFolderView() {
   const allFolders = await getAllFolders();
   const allPrompts = await getAllPrompts();
   const children = allFolders.filter(f => f.parentId === folderId);
-  const prompts = allPrompts.filter(p => p.folderId === folderId).sort((a, b) => b.updatedAt - a.updatedAt);
-  const libItems = (await getLibraryItemsByFolder(folderId)).sort((a, b) => b.updatedAt - a.updatedAt);
+  const sortMode = await getSortMode();
+  const prompts = sortItems(allPrompts.filter(p => p.folderId === folderId), sortMode);
+  const libItems = sortItems(await getLibraryItemsByFolder(folderId), sortMode);
   const images = await getImagesByParent(folderId);
 
   const main = $('#main');
   const empty = prompts.length === 0 && libItems.length === 0 && children.length === 0 && images.length === 0;
   main.innerHTML = `
+    ${sortControlHtml(sortMode)}
     ${children.length ? `<div class="section-title">Folders</div>${children.map(f => renderFolderCard(f, allFolders, allPrompts)).join('')}` : ''}
     ${prompts.length ? `<div class="section-title">Prompts (${prompts.length})</div><div class="prompts-grid">${prompts.map(p => renderPromptCard(p)).join('')}</div>` : ''}
     ${libItems.length ? `<div class="section-title">Library (${libItems.length})</div><div class="prompts-grid">${libItems.map(i => renderLibraryCard(i)).join('')}</div>` : ''}
@@ -686,6 +894,7 @@ async function renderFolderView() {
   bindFolderCards();
   bindPromptCards();
   bindLibraryCards();
+  bindSortControl(() => renderFolderView());
 }
 
 async function renderFavorites() {
@@ -827,7 +1036,7 @@ function renderSettings() {
         <span class="settings-label">How to connect (ChatGPT / Claude / Cursor)</span>
         <span class="settings-value" style="white-space:normal;line-height:1.45;">
           <strong>Hosted MCP (recommended)</strong><br>
-          Endpoint: <code>https://roys-s-digital-library-mcp.onrender.com/mcp</code><br>
+          Endpoint: <code>https://roy-s-digital-library.onrender.com/mcp</code><br>
           1. Add that URL as a remote / custom MCP connector<br>
           2. Complete OAuth sign-in when prompted<br>
           3. Use tools like search_library, create_library_item<br><br>
@@ -850,10 +1059,10 @@ function renderSettings() {
   $('#copy-mcp-url')?.addEventListener('click', async () => {
     try {
       const { MCP_ENDPOINT } = await import('./config.js');
-      await copyText(MCP_ENDPOINT || 'https://roys-s-digital-library-mcp.onrender.com/mcp');
+      await copyText(MCP_ENDPOINT || 'https://roy-s-digital-library.onrender.com/mcp');
       toast('✓ MCP endpoint copied');
     } catch (e) {
-      await copyText('https://roys-s-digital-library-mcp.onrender.com/mcp');
+      await copyText('https://roy-s-digital-library.onrender.com/mcp');
       toast('✓ MCP endpoint copied');
     }
   });
@@ -1149,12 +1358,20 @@ function bindLibraryCards() {
     block.querySelector('[data-action="copy-lib"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
       const item = await getLibraryItem(id);
-      if (item) {
+      if (!item) return;
+      if (item.itemType === 'spreadsheet') {
+        const { columns, rows } = parseSpreadsheetContent(item.content);
+        const csv = [columns.join(','), ...rows.map((r) => r.map((c) => {
+          const s = String(c ?? '');
+          return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+        }).join(','))].join('\n');
+        await copyText(csv);
+      } else {
         await copyText(item.content);
-        item.lastUsedAt = Date.now();
-        item.useCount = (item.useCount || 0) + 1;
-        await saveLibraryItem(item);
       }
+      item.lastUsedAt = Date.now();
+      item.useCount = (item.useCount || 0) + 1;
+      await saveLibraryItem(item);
     });
     block.querySelector('[data-action="move-lib"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1166,13 +1383,24 @@ function bindLibraryCards() {
       const item = await getLibraryItem(id);
       if (item) openShareModal(item);
     });
+    block.querySelectorAll('[data-action="open-sheet"]').forEach((el) => {
+      el.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const item = await getLibraryItem(id);
+        if (item) openSpreadsheetViewer(item);
+      });
+    });
     block.querySelector('[data-action="expand"]')?.addEventListener('click', (e) => {
       e.currentTarget.classList.toggle('expanded');
     });
     block.querySelector('[data-action="edit-lib"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
       const item = await getLibraryItem(id);
-      if (item) openLibraryEditor(item);
+      if (!item) return;
+      if (item.itemType === 'spreadsheet') openSpreadsheetEditor(item);
+      else if (item.itemType === 'presentation') openPresentationEditor(item);
+      else if (item.itemType === 'document') openDocumentEditor(item);
+      else openLibraryEditor(item);
     });
     block.querySelector('[data-action="related-lib"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1215,9 +1443,10 @@ function bindLibraryCards() {
   });
 }
 
-function openModal(html) {
+function openModal(html, opts = {}) {
   const root = $('#modal-root');
-  root.innerHTML = `<div class="modal-backdrop"><div class="modal-sheet"><div class="modal-handle"></div>${html}</div></div>`;
+  const wideCls = opts.wide ? ' modal-sheet-wide' : '';
+  root.innerHTML = `<div class="modal-backdrop"><div class="modal-sheet${wideCls}" style="${opts.wide ? 'max-width:min(960px,96vw);width:96vw;' : ''}"><div class="modal-handle"></div>${html}</div></div>`;
   root.querySelector('.modal-backdrop').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeModal();
   });
@@ -1478,6 +1707,15 @@ function openQuickAdd() {
       <button class="action-item" data-action="new-note">Note</button>
       <button class="action-item" data-action="new-resource">Resource</button>
       <button class="action-item" data-action="new-template">Template</button>
+      <button class="action-item" data-action="new-spreadsheet">
+        <span>📊</span> Spreadsheet
+      </button>
+      <button class="action-item" data-action="new-presentation">
+        <span>📑</span> Presentation
+      </button>
+      <button class="action-item" data-action="new-document">
+        <span>📄</span> Document
+      </button>
       <button class="action-item" data-action="add-image">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
         Add Image
@@ -1492,6 +1730,9 @@ function openQuickAdd() {
   $all('[data-action="new-note"]').forEach(el => el.addEventListener('click', () => { closeModal(); openLibraryEditor(null, 'note'); }));
   $all('[data-action="new-resource"]').forEach(el => el.addEventListener('click', () => { closeModal(); openLibraryEditor(null, 'resource'); }));
   $all('[data-action="new-template"]').forEach(el => el.addEventListener('click', () => { closeModal(); openLibraryEditor(null, 'template'); }));
+  $all('[data-action="new-spreadsheet"]').forEach(el => el.addEventListener('click', () => { closeModal(); openSpreadsheetEditor(null); }));
+  $all('[data-action="new-document"]').forEach(el => el.addEventListener('click', () => { closeModal(); openDocumentEditor(null); }));
+  $all('[data-action="new-presentation"]').forEach(el => el.addEventListener('click', () => { closeModal(); openPresentationEditor(null); }));
   $all('[data-action="add-image"]').forEach(el => el.addEventListener('click', () => { closeModal(); openImagePicker(); }));
 }
 
@@ -1625,6 +1866,343 @@ function confirmDeletePrompt(id) {
   });
 }
 
+
+
+async function openSpreadsheetViewer(item) {
+  const { columns, rows } = parseSpreadsheetContent(item.content);
+  const thead = columns.map((c) => `<th style="position:sticky;top:0;background:var(--surface-2,#f3eee3);padding:8px;border:1px solid var(--border);text-align:left;font-size:13px;">${escapeHtml(c)}</th>`).join('');
+  const tbody = rows.map((r) => `<tr>${columns.map((_, i) => `<td style="padding:8px;border:1px solid var(--border);font-size:13px;white-space:pre-wrap;">${escapeHtml(r[i] ?? '')}</td>`).join('')}</tr>`).join('');
+  openModal(`
+    <div class="modal-title">${escapeHtml(itemTypeLabel('spreadsheet'))}: ${escapeHtml(item.title)}</div>
+    <div style="overflow:auto;max-height:60vh;margin:12px 0;border:1px solid var(--border);border-radius:12px;">
+      <table style="border-collapse:collapse;width:100%;min-width:320px;">
+        <thead><tr>${thead}</tr></thead>
+        <tbody>${tbody || '<tr><td colspan="99" style="padding:12px;color:var(--text-muted);">Empty sheet</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div id="sheet-chart" style="margin:12px 0;">${buildBarChartSvg(columns, rows, Math.min(1, Math.max(0, columns.length - 1)), 0)}</div>
+    <div class="btn-row" style="flex-wrap:wrap;">
+      <button class="btn btn-secondary" id="sheet-close">Close</button>
+      <button class="btn btn-secondary" id="sheet-copy-csv">Copy CSV</button>
+      <button class="btn btn-secondary" id="sheet-download-csv">Download CSV (Excel)</button>
+      <button class="btn btn-primary" id="sheet-edit">Edit</button>
+    </div>
+  `, { wide: true });
+  $('#sheet-close')?.addEventListener('click', closeModal);
+  $('#sheet-edit')?.addEventListener('click', () => { closeModal(); openSpreadsheetEditor(item); });
+  const csvText = sheetToCsv(columns, rows);
+  $('#sheet-copy-csv')?.addEventListener('click', async () => {
+    await copyText(csvText);
+    item.lastUsedAt = Date.now();
+    item.useCount = (item.useCount || 0) + 1;
+    await saveLibraryItem(item);
+  });
+  $('#sheet-download-csv')?.addEventListener('click', () => {
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = ((item.title || 'sheet').replace(/[^a-z0-9._-]+/gi, '_')) + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+}
+
+async function openSpreadsheetEditor(item = null) {
+  const isEdit = !!item;
+  const parsed = item ? parseSpreadsheetContent(item.content) : { columns: ['Column 1', 'Column 2', 'Column 3'], rows: [['', '', ''], ['', '', '']], notes: '' };
+  let columns = [...parsed.columns];
+  let rows = parsed.rows.map((r) => [...r]);
+  const folders = await getAllFolders();
+  const folderOptions = folders
+    .filter((f) => f.id !== 'root')
+    .map((f) => `<option value="${f.id}" ${(item?.folderId || state.currentFolderId) === f.id ? 'selected' : ''}>${escapeHtml(f.name)}</option>`)
+    .join('');
+
+  const renderGrid = () => {
+    const head = columns.map((c, ci) => `<th style="padding:4px;"><input data-col="${ci}" value="${escapeHtml(c)}" style="width:100%;min-width:90px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);"/></th>`).join('')
+      + `<th style="width:36px;"></th>`;
+    const body = rows.map((r, ri) => `<tr>${columns.map((_, ci) => `<td style="padding:2px;"><input data-r="${ri}" data-c="${ci}" value="${escapeHtml(r[ci] ?? '')}" style="width:100%;min-width:90px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);"/></td>`).join('')}<td><button type="button" data-del-row="${ri}" style="border:0;background:transparent;color:var(--danger,#a44);cursor:pointer;">×</button></td></tr>`).join('');
+    return `<div style="overflow:auto;max-height:45vh;"><table style="border-collapse:collapse;width:100%;"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  };
+
+  openModal(`
+    <div class="modal-title">${isEdit ? 'Edit spreadsheet' : 'New spreadsheet'}</div>
+    <div class="form-group">
+      <label>Title</label>
+      <input type="text" id="sheet-title" value="${escapeHtml(item?.title || '')}" placeholder="e.g. Q3 Outreach Tracker" />
+    </div>
+    <div class="form-group">
+      <label>Folder</label>
+      <select id="sheet-folder">${folderOptions || '<option value="root">Root</option>'}</select>
+    </div>
+    <div id="sheet-grid">${renderGrid()}</div>
+    <div class="btn-row" style="margin-top:8px;">
+      <button class="btn btn-secondary" id="sheet-add-col" type="button">+ Column</button>
+      <button class="btn btn-secondary" id="sheet-add-row" type="button">+ Row</button>
+    </div>
+    <div class="form-group" style="margin-top:12px;">
+      <label>Tags (comma separated)</label>
+      <input type="text" id="sheet-tags" value="${escapeHtml((item?.tags || []).join(', '))}" />
+    </div>
+    <div class="btn-row" style="flex-wrap:wrap;">
+      <button class="btn btn-secondary" id="cancel-sheet">Cancel</button>
+      <button class="btn btn-secondary" id="import-csv">Import CSV</button>
+      <button class="btn btn-primary" id="save-sheet">Save</button>
+    </div>
+  `, { wide: true });
+
+  const readGridFromDom = () => {
+    columns = [...$all('#sheet-grid input[data-col]')].map((el) => el.value || 'Column');
+    const maxR = Math.max(-1, ...[...$all('#sheet-grid input[data-r]')].map((el) => +el.dataset.r));
+    rows = [];
+    for (let ri = 0; ri <= maxR; ri++) {
+      rows.push(columns.map((_, ci) => {
+        const el = document.querySelector(`#sheet-grid input[data-r="${ri}"][data-c="${ci}"]`);
+        return el ? el.value : '';
+      }));
+    }
+  };
+
+  const refreshGrid = () => {
+    readGridFromDom();
+    $('#sheet-grid').innerHTML = renderGrid();
+    wireGridButtons();
+  };
+
+  const wireGridButtons = () => {
+    $all('#sheet-grid [data-del-row]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        readGridFromDom();
+        const ri = +btn.dataset.delRow;
+        if (rows.length <= 1) return;
+        rows.splice(ri, 1);
+        $('#sheet-grid').innerHTML = renderGrid();
+        wireGridButtons();
+      });
+    });
+  };
+  wireGridButtons();
+
+  $('#sheet-add-col')?.addEventListener('click', () => {
+    readGridFromDom();
+    columns.push(`Column ${columns.length + 1}`);
+    rows = rows.map((r) => [...r, '']);
+    $('#sheet-grid').innerHTML = renderGrid();
+    wireGridButtons();
+  });
+  $('#sheet-add-row')?.addEventListener('click', () => {
+    readGridFromDom();
+    rows.push(columns.map(() => ''));
+    $('#sheet-grid').innerHTML = renderGrid();
+    wireGridButtons();
+  });
+  $('#cancel-sheet')?.addEventListener('click', closeModal);
+  $('#import-csv')?.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,text/csv';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const parsed = parseCsv(text);
+      columns = parsed.columns;
+      rows = parsed.rows;
+      $('#sheet-grid').innerHTML = renderGrid();
+      wireGridButtons();
+      toast('CSV imported');
+    };
+    input.click();
+  });
+  $('#save-sheet')?.addEventListener('click', async () => {
+    const title = $('#sheet-title').value.trim();
+    if (!title) return toast('Title required');
+    readGridFromDom();
+    const tags = $('#sheet-tags').value.split(',').map((x) => x.trim().toLowerCase().replace(/^#/, '')).filter(Boolean);
+    const content = encodeSpreadsheetContent({ columns, rows });
+    const row = item || { id: uid(), isFavorite: false, createdAt: Date.now() };
+    row.title = title;
+    row.content = content;
+    row.itemType = 'spreadsheet';
+    row.folderId = $('#sheet-folder').value || 'root';
+    row.tags = tags;
+    row.updatedAt = Date.now();
+    if (!row.createdAt) row.createdAt = Date.now();
+    await saveLibraryItem(row);
+    closeModal();
+    toast(isEdit ? 'Spreadsheet updated' : 'Spreadsheet saved');
+    if (state.user && navigator.onLine) fullSync(state.user.id);
+    render();
+  });
+}
+
+
+async function openPresentationViewer(item) {
+  const { slides } = parsePresentationContent(item.content);
+  let idx = 0;
+  const paint = () => {
+    const s = slides[idx] || { title: '', body: '', bullets: [] };
+    const bullets = (s.bullets || []).map((b) => `<li>${escapeHtml(b)}</li>`).join('');
+    $('#deck-stage').innerHTML = `
+      <div style="min-height:220px;padding:24px;background:linear-gradient(145deg,#fffdf8,#f7f1e8);border-radius:16px;border:1px solid var(--border);">
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">Slide ${idx + 1} / ${slides.length}</div>
+        <h2 style="margin:0 0 12px;font-family:Georgia,serif;color:#b8901f;">${escapeHtml(s.title || '')}</h2>
+        <div style="font-size:15px;line-height:1.5;color:var(--text);white-space:pre-wrap;">${escapeHtml(s.body || '')}</div>
+        ${bullets ? `<ul style="margin-top:12px;">${bullets}</ul>` : ''}
+      </div>`;
+  };
+  openModal(`
+    <div class="modal-title">${escapeHtml(item.title)}</div>
+    <div id="deck-stage"></div>
+    <div class="btn-row" style="margin-top:12px;flex-wrap:wrap;">
+      <button class="btn btn-secondary" id="deck-prev">Prev</button>
+      <button class="btn btn-secondary" id="deck-next">Next</button>
+      <button class="btn btn-secondary" id="deck-close">Close</button>
+      <button class="btn btn-primary" id="deck-edit">Edit</button>
+    </div>
+  `, { wide: true });
+  paint();
+  $('#deck-prev')?.addEventListener('click', () => { idx = (idx - 1 + slides.length) % slides.length; paint(); });
+  $('#deck-next')?.addEventListener('click', () => { idx = (idx + 1) % slides.length; paint(); });
+  $('#deck-close')?.addEventListener('click', closeModal);
+  $('#deck-edit')?.addEventListener('click', () => { closeModal(); openPresentationEditor(item); });
+}
+
+async function openPresentationEditor(item = null) {
+  const isEdit = !!item;
+  let slides = item ? parsePresentationContent(item.content).slides.map((s) => ({ ...s, bullets: [...(s.bullets || [])] })) : [{ title: 'Title slide', body: '', bullets: ['Point 1'], notes: '' }];
+  const folders = await getAllFolders();
+  const folderOptions = folders.filter((f) => f.id !== 'root').map((f) => `<option value="${f.id}" ${(item?.folderId || state.currentFolderId) === f.id ? 'selected' : ''}>${escapeHtml(f.name)}</option>`).join('');
+
+  const renderSlides = () => slides.map((s, i) => `
+    <div class="settings-group" data-slide="${i}" style="margin-bottom:12px;padding:12px;">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Slide ${i + 1}</div>
+      <input data-f="title" data-i="${i}" value="${escapeHtml(s.title || '')}" placeholder="Slide title" style="width:100%;margin-bottom:6px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);"/>
+      <textarea data-f="body" data-i="${i}" rows="3" placeholder="Body text" style="width:100%;margin-bottom:6px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);">${escapeHtml(s.body || '')}</textarea>
+      <textarea data-f="bullets" data-i="${i}" rows="3" placeholder="Bullets (one per line)" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);">${escapeHtml((s.bullets || []).join('\n'))}</textarea>
+      <button type="button" data-del-slide="${i}" class="btn btn-secondary" style="margin-top:6px;">Remove slide</button>
+    </div>`).join('');
+
+  openModal(`
+    <div class="modal-title">${isEdit ? 'Edit presentation' : 'New presentation'}</div>
+    <div class="form-group"><label>Title</label><input id="deck-title" value="${escapeHtml(item?.title || '')}" placeholder="Deck title"/></div>
+    <div class="form-group"><label>Folder</label><select id="deck-folder">${folderOptions || '<option value="root">Root</option>'}</select></div>
+    <div id="deck-slides">${renderSlides()}</div>
+    <div class="btn-row"><button class="btn btn-secondary" id="deck-add-slide" type="button">+ Slide</button></div>
+    <div class="btn-row" style="margin-top:12px;">
+      <button class="btn btn-secondary" id="cancel-deck">Cancel</button>
+      <button class="btn btn-primary" id="save-deck">Save</button>
+    </div>
+  `, { wide: true });
+
+  const readSlides = () => {
+    slides = slides.map((s, i) => ({
+      title: document.querySelector(`#deck-slides input[data-f="title"][data-i="${i}"]`)?.value || s.title,
+      body: document.querySelector(`#deck-slides textarea[data-f="body"][data-i="${i}"]`)?.value || '',
+      bullets: (document.querySelector(`#deck-slides textarea[data-f="bullets"][data-i="${i}"]`)?.value || '').split('\n').map((x) => x.trim()).filter(Boolean),
+      notes: s.notes || '',
+    }));
+  };
+  const rebind = () => {
+    $all('#deck-slides [data-del-slide]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        readSlides();
+        if (slides.length <= 1) return;
+        slides.splice(+btn.dataset.delSlide, 1);
+        $('#deck-slides').innerHTML = renderSlides();
+        rebind();
+      });
+    });
+  };
+  rebind();
+  $('#deck-add-slide')?.addEventListener('click', () => {
+    readSlides();
+    slides.push({ title: `Slide ${slides.length + 1}`, body: '', bullets: [], notes: '' });
+    $('#deck-slides').innerHTML = renderSlides();
+    rebind();
+  });
+  $('#cancel-deck')?.addEventListener('click', closeModal);
+  $('#save-deck')?.addEventListener('click', async () => {
+    const title = $('#deck-title').value.trim();
+    if (!title) return toast('Title required');
+    readSlides();
+    const row = item || { id: uid(), isFavorite: false, createdAt: Date.now() };
+    row.title = title;
+    row.itemType = 'presentation';
+    row.content = encodePresentationContent({ slides });
+    row.folderId = $('#deck-folder').value || 'root';
+    row.tags = row.tags || [];
+    row.updatedAt = Date.now();
+    await saveLibraryItem(row);
+    closeModal();
+    toast(isEdit ? 'Presentation updated' : 'Presentation saved');
+    if (state.user && navigator.onLine) fullSync(state.user.id);
+    render();
+  });
+}
+
+async function openDocumentViewer(item) {
+  const doc = parseDocumentContent(item.content);
+  openModal(`
+    <div class="modal-title">${escapeHtml(item.title)}</div>
+    <div class="doc-preview" style="max-height:60vh;overflow:auto;padding:16px;background:#fffdf8;border:1px solid var(--border);border-radius:14px;line-height:1.55;">
+      ${simpleMarkdown(doc.body)}
+    </div>
+    <div class="btn-row" style="margin-top:12px;">
+      <button class="btn btn-secondary" id="doc-close">Close</button>
+      <button class="btn btn-secondary" id="doc-copy">Copy</button>
+      <button class="btn btn-primary" id="doc-edit">Edit</button>
+    </div>
+  `, { wide: true });
+  $('#doc-close')?.addEventListener('click', closeModal);
+  $('#doc-edit')?.addEventListener('click', () => { closeModal(); openDocumentEditor(item); });
+  $('#doc-copy')?.addEventListener('click', async () => {
+    await copyText(doc.body);
+    item.lastUsedAt = Date.now();
+    await saveLibraryItem(item);
+  });
+}
+
+async function openDocumentEditor(item = null) {
+  const isEdit = !!item;
+  const doc = item ? parseDocumentContent(item.content) : { body: '# Title\n\nWrite your document in **Markdown**…\n\n- Point one\n- Point two', format: 'markdown' };
+  const folders = await getAllFolders();
+  const folderOptions = folders.filter((f) => f.id !== 'root').map((f) => `<option value="${f.id}" ${(item?.folderId || state.currentFolderId) === f.id ? 'selected' : ''}>${escapeHtml(f.name)}</option>`).join('');
+  openModal(`
+    <div class="modal-title">${isEdit ? 'Edit document' : 'New document'}</div>
+    <div class="form-group"><label>Title</label><input id="doc-title" value="${escapeHtml(item?.title || '')}"/></div>
+    <div class="form-group"><label>Folder</label><select id="doc-folder">${folderOptions || '<option value="root">Root</option>'}</select></div>
+    <div class="form-group"><label>Markdown</label>
+      <textarea id="doc-body" rows="14" style="width:100%;font-family:ui-monospace,monospace;font-size:13px;padding:12px;border-radius:12px;border:1px solid var(--border);background:var(--surface);">${escapeHtml(doc.body)}</textarea>
+    </div>
+    <div class="form-group"><label>Live preview</label>
+      <div id="doc-live" style="min-height:80px;padding:12px;border-radius:12px;border:1px solid var(--border);background:#fffdf8;"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" id="cancel-doc">Cancel</button>
+      <button class="btn btn-primary" id="save-doc">Save</button>
+    </div>
+  `, { wide: true });
+  const live = () => { $('#doc-live').innerHTML = simpleMarkdown($('#doc-body').value); };
+  $('#doc-body')?.addEventListener('input', live);
+  live();
+  $('#cancel-doc')?.addEventListener('click', closeModal);
+  $('#save-doc')?.addEventListener('click', async () => {
+    const title = $('#doc-title').value.trim();
+    if (!title) return toast('Title required');
+    const row = item || { id: uid(), isFavorite: false, createdAt: Date.now(), tags: [] };
+    row.title = title;
+    row.itemType = 'document';
+    row.content = encodeDocumentContent({ body: $('#doc-body').value, format: 'markdown' });
+    row.folderId = $('#doc-folder').value || 'root';
+    row.updatedAt = Date.now();
+    await saveLibraryItem(row);
+    closeModal();
+    toast(isEdit ? 'Document updated' : 'Document saved');
+    if (state.user && navigator.onLine) fullSync(state.user.id);
+    render();
+  });
+}
 
 async function openLibraryEditor(item = null, defaultType = 'note') {
   const isEdit = !!item;

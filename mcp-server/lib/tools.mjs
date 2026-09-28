@@ -7,6 +7,7 @@ import { randomBytes, createHash } from 'crypto';
 const ITEM_TYPES = new Set([
   'prompt', 'research', 'strategy', 'idea', 'note',
   'resource', 'template', 'experiment', 'product_asset',
+  'spreadsheet', 'document', 'presentation',
 ]);
 
 export const TOOL_SCOPES = {
@@ -23,6 +24,16 @@ export const TOOL_SCOPES = {
   restore_library_item: 'library:write',
   delete_library_item: 'library:delete',
   delete_folder: 'library:delete',
+  create_spreadsheet: 'library:write',
+  update_spreadsheet: 'library:write',
+  get_spreadsheet: 'library:read',
+  list_spreadsheets: 'library:read',
+  create_presentation: 'library:write',
+  update_presentation: 'library:write',
+  get_presentation: 'library:read',
+  create_document: 'library:write',
+  update_document: 'library:write',
+  get_document: 'library:read',
 };
 
 export function makeError(code, message) {
@@ -81,6 +92,86 @@ function shareToken() {
   return randomBytes(24).toString('hex');
 }
 
+
+/** Normalize spreadsheet payload to JSON string for library_items.content */
+export function encodeSpreadsheet({ columns = [], rows = [], notes = '' } = {}) {
+  const cols = (Array.isArray(columns) ? columns : []).map((c) => String(c ?? '').slice(0, 200)).slice(0, 50);
+  const normalizedRows = (Array.isArray(rows) ? rows : []).slice(0, 2000).map((r) => {
+    const arr = Array.isArray(r) ? r : [r];
+    return arr.slice(0, Math.max(cols.length, 1)).map((c) => String(c ?? '').slice(0, 2000));
+  });
+  // pad rows to column count
+  const width = cols.length || Math.max(0, ...normalizedRows.map((r) => r.length), 1);
+  while (cols.length < width) cols.push(`Col ${cols.length + 1}`);
+  const padded = normalizedRows.map((r) => {
+    const copy = [...r];
+    while (copy.length < width) copy.push('');
+    return copy;
+  });
+  return JSON.stringify({ v: 1, kind: 'spreadsheet', columns: cols, rows: padded, notes: String(notes || '') });
+}
+
+export function decodeSpreadsheet(content) {
+  if (!content || typeof content !== 'string') {
+    return { columns: ['A', 'B', 'C'], rows: [['', '', '']], notes: '' };
+  }
+  try {
+    const data = JSON.parse(content);
+    if (data && data.kind === 'spreadsheet' && Array.isArray(data.columns) && Array.isArray(data.rows)) {
+      return {
+        columns: data.columns.map(String),
+        rows: data.rows.map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? '')) : [String(r)])),
+        notes: data.notes || '',
+      };
+    }
+  } catch (_) {}
+  // Fallback: treat plain text / CSV-ish as single column
+  const lines = content.split(/\r?\n/).filter((l) => l.length);
+  if (lines.length && lines[0].includes(',')) {
+    const rows = lines.map((l) => l.split(',').map((c) => c.trim()));
+    const width = Math.max(...rows.map((r) => r.length));
+    const columns = rows[0].map((_, i) => `Col ${i + 1}`);
+    return { columns, rows, notes: '' };
+  }
+  return { columns: ['Content'], rows: lines.map((l) => [l]), notes: '' };
+}
+
+
+export function encodePresentation({ slides = [], notes = '' } = {}) {
+  const normalized = (Array.isArray(slides) ? slides : []).slice(0, 100).map((s, i) => ({
+    title: String(s?.title ?? `Slide ${i + 1}`).slice(0, 300),
+    body: String(s?.body ?? '').slice(0, 20000),
+    bullets: Array.isArray(s?.bullets) ? s.bullets.map((b) => String(b).slice(0, 500)).slice(0, 30) : [],
+    notes: String(s?.notes ?? '').slice(0, 5000),
+  }));
+  if (!normalized.length) normalized.push({ title: 'Slide 1', body: '', bullets: [], notes: '' });
+  return JSON.stringify({ v: 1, kind: 'presentation', slides: normalized, notes: String(notes || '') });
+}
+
+export function decodePresentation(content) {
+  try {
+    const data = JSON.parse(content || '');
+    if (data?.kind === 'presentation' && Array.isArray(data.slides)) {
+      return { slides: data.slides, notes: data.notes || '' };
+    }
+  } catch (_) {}
+  return { slides: [{ title: 'Slide 1', body: String(content || ''), bullets: [], notes: '' }], notes: '' };
+}
+
+export function encodeDocument({ body = '', format = 'markdown' } = {}) {
+  return JSON.stringify({ v: 1, kind: 'document', format: format === 'html' ? 'html' : 'markdown', body: String(body || '').slice(0, 200000) });
+}
+
+export function decodeDocument(content) {
+  try {
+    const data = JSON.parse(content || '');
+    if (data?.kind === 'document') {
+      return { format: data.format || 'markdown', body: String(data.body || '') };
+    }
+  } catch (_) {}
+  return { format: 'markdown', body: String(content || '') };
+}
+
 export async function runTool(name, args, ctx) {
   const { sb, user, entitlement } = ctx;
   const scope = TOOL_SCOPES[name];
@@ -93,6 +184,7 @@ export async function runTool(name, args, ctx) {
   const userId = user.id;
 
   switch (name) {
+
     case 'search_library': {
       // Filtering happens in Postgres (ilike on title/content, exact match
       // on tags) rather than fetching a fixed page and filtering in JS, so
@@ -347,6 +439,199 @@ export async function runTool(name, args, ctx) {
       if (!data) throw makeError('NOT_FOUND', 'Not found or permission denied');
       return { deleted: true, id, soft: true, kind };
     }
+
+    case 'create_spreadsheet': {
+      const title = validateString(a.title, 'title', { max: 500 });
+      const folderId = a.folder_id ? validateString(a.folder_id, 'folder_id', { max: 80 }) : 'root';
+      const tags = Array.isArray(a.tags) ? a.tags.map(String).slice(0, 30) : [];
+      const columns = Array.isArray(a.columns) ? a.columns : (a.headers || []);
+      const rows = Array.isArray(a.rows) ? a.rows : [];
+      if (!columns.length && !rows.length) {
+        throw makeError('VALIDATION_ERROR', 'Provide columns and/or rows for the spreadsheet');
+      }
+      const content = encodeSpreadsheet({ columns, rows, notes: a.notes || '' });
+      const now = Date.now();
+      const id = a.idempotency_key
+        ? createHash('sha256').update(userId + ':sheet:' + a.idempotency_key).digest('hex').slice(0, 32)
+        : uid();
+      const { error } = await sb.from('library_items').upsert({
+        id, user_id: userId, folder_id: folderId, item_type: 'spreadsheet', title, content, tags,
+        notes: a.notes || '', source_url: '', metadata: { kind: 'spreadsheet', cols: (columns || []).length, rows: (rows || []).length },
+        is_favorite: false, created_at: now, updated_at: now, deleted_at: null,
+      });
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      const decoded = decodeSpreadsheet(content);
+      return {
+        kind: 'spreadsheet', id, title, folder_id: folderId,
+        columns: decoded.columns, row_count: decoded.rows.length,
+        message: 'Spreadsheet created. User can open it in Roy\'s Digital Library UI.',
+      };
+    }
+    case 'update_spreadsheet': {
+      const id = validateString(a.id, 'id');
+      const { data: existing, error: loadErr } = await sb.from('library_items')
+        .select('id, title, content, item_type, folder_id, tags, notes')
+        .eq('id', id).eq('user_id', userId).is('deleted_at', null).maybeSingle();
+      if (loadErr) throw makeError('DEPENDENCY_ERROR', loadErr.message);
+      if (!existing) throw makeError('NOT_FOUND', 'Spreadsheet not found');
+      if (existing.item_type !== 'spreadsheet') throw makeError('VALIDATION_ERROR', 'Item is not a spreadsheet');
+      const current = decodeSpreadsheet(existing.content);
+      const columns = a.columns != null ? (Array.isArray(a.columns) ? a.columns : current.columns) : current.columns;
+      const rows = a.rows != null ? (Array.isArray(a.rows) ? a.rows : current.rows) : current.rows;
+      const content = encodeSpreadsheet({ columns, rows, notes: a.notes != null ? a.notes : current.notes });
+      const patch = {
+        content,
+        updated_at: Date.now(),
+        metadata: { kind: 'spreadsheet', cols: columns.length, rows: rows.length },
+      };
+      if (a.title != null) patch.title = validateString(a.title, 'title', { max: 500 });
+      if (a.tags != null) patch.tags = Array.isArray(a.tags) ? a.tags.map(String).slice(0, 30) : [];
+      if (a.notes != null) patch.notes = String(a.notes);
+      const { error } = await sb.from('library_items').update(patch).eq('id', id).eq('user_id', userId);
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      return { kind: 'spreadsheet', id, title: patch.title || existing.title, columns, row_count: rows.length, updated: true };
+    }
+    case 'get_spreadsheet': {
+      const id = validateString(a.id, 'id');
+      const { data, error } = await sb.from('library_items')
+        .select('id, title, content, folder_id, tags, notes, updated_at, created_at, item_type')
+        .eq('id', id).eq('user_id', userId).is('deleted_at', null).maybeSingle();
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      if (!data) throw makeError('NOT_FOUND', 'Spreadsheet not found');
+      if (data.item_type !== 'spreadsheet') throw makeError('VALIDATION_ERROR', 'Item is not a spreadsheet');
+      const decoded = decodeSpreadsheet(data.content);
+      return {
+        kind: 'spreadsheet',
+        id: data.id,
+        title: data.title,
+        folder_id: data.folder_id,
+        tags: data.tags || [],
+        notes: data.notes || '',
+        columns: decoded.columns,
+        rows: decoded.rows,
+        row_count: decoded.rows.length,
+        updated_at: data.updated_at,
+      };
+    }
+    case 'list_spreadsheets': {
+      const limit = Math.min(Math.max(parseInt(a.limit || 50, 10) || 50, 1), 100);
+      const { data, error } = await sb.from('library_items')
+        .select('id, title, folder_id, tags, updated_at, created_at, metadata')
+        .eq('user_id', userId).eq('item_type', 'spreadsheet').is('deleted_at', null)
+        .order('updated_at', { ascending: false }).limit(limit);
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      return {
+        kind: 'spreadsheet_list',
+        count: (data || []).length,
+        items: (data || []).map((r) => ({
+          id: r.id, title: r.title, folder_id: r.folder_id, tags: r.tags || [],
+          updated_at: r.updated_at, cols: r.metadata?.cols, rows: r.metadata?.rows,
+        })),
+      };
+    }
+
+
+    case 'create_presentation': {
+      const title = validateString(a.title, 'title', { max: 500 });
+      const folderId = a.folder_id ? validateString(a.folder_id, 'folder_id', { max: 80 }) : 'root';
+      const tags = Array.isArray(a.tags) ? a.tags.map(String).slice(0, 30) : [];
+      const slides = Array.isArray(a.slides) ? a.slides : [];
+      if (!slides.length && a.outline) {
+        // outline: array of strings or {title, points}
+        const outline = Array.isArray(a.outline) ? a.outline : [];
+        for (const o of outline) {
+          if (typeof o === 'string') slides.push({ title: o, body: '', bullets: [] });
+          else slides.push({ title: o.title || 'Slide', body: o.body || '', bullets: o.bullets || o.points || [] });
+        }
+      }
+      const content = encodePresentation({ slides, notes: a.notes || '' });
+      const now = Date.now();
+      const id = a.idempotency_key
+        ? createHash('sha256').update(userId + ':deck:' + a.idempotency_key).digest('hex').slice(0, 32)
+        : uid();
+      const decoded = decodePresentation(content);
+      const { error } = await sb.from('library_items').upsert({
+        id, user_id: userId, folder_id: folderId, item_type: 'presentation', title, content, tags,
+        notes: a.notes || '', source_url: '', metadata: { kind: 'presentation', slides: decoded.slides.length },
+        is_favorite: false, created_at: now, updated_at: now, deleted_at: null,
+      });
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      return { kind: 'presentation', id, title, folder_id: folderId, slide_count: decoded.slides.length };
+    }
+    case 'update_presentation': {
+      const id = validateString(a.id, 'id');
+      const { data: existing, error: loadErr } = await sb.from('library_items')
+        .select('id, title, content, item_type').eq('id', id).eq('user_id', userId).is('deleted_at', null).maybeSingle();
+      if (loadErr) throw makeError('DEPENDENCY_ERROR', loadErr.message);
+      if (!existing) throw makeError('NOT_FOUND', 'Presentation not found');
+      if (existing.item_type !== 'presentation') throw makeError('VALIDATION_ERROR', 'Item is not a presentation');
+      const current = decodePresentation(existing.content);
+      const slides = a.slides != null ? a.slides : current.slides;
+      const content = encodePresentation({ slides, notes: a.notes != null ? a.notes : current.notes });
+      const patch = { content, updated_at: Date.now(), metadata: { kind: 'presentation', slides: (slides || []).length } };
+      if (a.title != null) patch.title = validateString(a.title, 'title', { max: 500 });
+      const { error } = await sb.from('library_items').update(patch).eq('id', id).eq('user_id', userId);
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      return { kind: 'presentation', id, title: patch.title || existing.title, slide_count: (slides || []).length, updated: true };
+    }
+    case 'get_presentation': {
+      const id = validateString(a.id, 'id');
+      const { data, error } = await sb.from('library_items')
+        .select('id, title, content, folder_id, tags, updated_at, item_type')
+        .eq('id', id).eq('user_id', userId).is('deleted_at', null).maybeSingle();
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      if (!data) throw makeError('NOT_FOUND', 'Presentation not found');
+      if (data.item_type !== 'presentation') throw makeError('VALIDATION_ERROR', 'Not a presentation');
+      const decoded = decodePresentation(data.content);
+      return { kind: 'presentation', id: data.id, title: data.title, folder_id: data.folder_id, tags: data.tags || [], slides: decoded.slides, slide_count: decoded.slides.length };
+    }
+    case 'create_document': {
+      const title = validateString(a.title, 'title', { max: 500 });
+      const body = validateString(a.body != null ? a.body : a.content, 'body', { max: 200000, required: false });
+      const folderId = a.folder_id ? validateString(a.folder_id, 'folder_id', { max: 80 }) : 'root';
+      const tags = Array.isArray(a.tags) ? a.tags.map(String).slice(0, 30) : [];
+      const content = encodeDocument({ body, format: a.format || 'markdown' });
+      const now = Date.now();
+      const id = a.idempotency_key
+        ? createHash('sha256').update(userId + ':doc:' + a.idempotency_key).digest('hex').slice(0, 32)
+        : uid();
+      const { error } = await sb.from('library_items').upsert({
+        id, user_id: userId, folder_id: folderId, item_type: 'document', title, content, tags,
+        notes: a.notes || '', source_url: a.source_url || '', metadata: { kind: 'document', format: a.format || 'markdown' },
+        is_favorite: false, created_at: now, updated_at: now, deleted_at: null,
+      });
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      return { kind: 'document', id, title, folder_id: folderId };
+    }
+    case 'update_document': {
+      const id = validateString(a.id, 'id');
+      const { data: existing, error: loadErr } = await sb.from('library_items')
+        .select('id, title, content, item_type').eq('id', id).eq('user_id', userId).is('deleted_at', null).maybeSingle();
+      if (loadErr) throw makeError('DEPENDENCY_ERROR', loadErr.message);
+      if (!existing) throw makeError('NOT_FOUND', 'Document not found');
+      if (existing.item_type !== 'document') throw makeError('VALIDATION_ERROR', 'Not a document');
+      const current = decodeDocument(existing.content);
+      const body = a.body != null ? a.body : (a.content != null ? a.content : current.body);
+      const content = encodeDocument({ body, format: a.format || current.format });
+      const patch = { content, updated_at: Date.now(), metadata: { kind: 'document', format: a.format || current.format } };
+      if (a.title != null) patch.title = validateString(a.title, 'title', { max: 500 });
+      const { error } = await sb.from('library_items').update(patch).eq('id', id).eq('user_id', userId);
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      return { kind: 'document', id, title: patch.title || existing.title, updated: true };
+    }
+    case 'get_document': {
+      const id = validateString(a.id, 'id');
+      const { data, error } = await sb.from('library_items')
+        .select('id, title, content, folder_id, tags, updated_at, item_type')
+        .eq('id', id).eq('user_id', userId).is('deleted_at', null).maybeSingle();
+      if (error) throw makeError('DEPENDENCY_ERROR', error.message);
+      if (!data) throw makeError('NOT_FOUND', 'Document not found');
+      if (data.item_type !== 'document') throw makeError('VALIDATION_ERROR', 'Not a document');
+      const decoded = decodeDocument(data.content);
+      return { kind: 'document', id: data.id, title: data.title, folder_id: data.folder_id, tags: data.tags || [], format: decoded.format, body: decoded.body };
+    }
+
+      
     default:
       throw makeError('NOT_FOUND', `Unknown tool: ${name}`);
   }

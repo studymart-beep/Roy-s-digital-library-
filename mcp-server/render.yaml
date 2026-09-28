@@ -1,27 +1,30 @@
-# Render Blueprint — deploy only the hosted MCP service
-# Dashboard: New → Blueprint → connect this repo → select mcp-server/render.yaml
-# Or create a Web Service manually with root directory: mcp-server
+# Render Blueprint — hosted MCP with persistent OAuth sessions
+# New → Blueprint → select this file, OR add a disk manually in the dashboard.
 
 services:
   - type: web
-    name: roys-s-digital-library-mcp
+    name: roys-digital-library-mcp
     runtime: node
     rootDir: mcp-server
     buildCommand: npm install --omit=dev
     startCommand: node hosted.mjs
     healthCheckPath: /health
+    disk:
+      name: mcp-oauth-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: PUBLIC_URL
-        value: https://roys-s-digital-library-mcp.onrender.com
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
       - key: MCP_OAUTH_STORE_KEY
         generateValue: true
-      - key: OAUTH_REDIRECT_ALLOWLIST
-        value: https://chatgpt.com,https://claude.ai,https://claude.ai/api/mcp/auth_callback
       - key: MCP_OAUTH_STORE_PATH
-        value: /tmp/oauth-store.json
+        value: /var/data/oauth-store.json
+      - key: OAUTH_REDIRECT_ALLOWLIST
+        value: https://chatgpt.com,https://claude.ai,https://claude.ai/api/mcp/auth_callback,https://claude.com,https://grok.com,https://grok.com/connectors-oauth-exchange-code/,https://x.ai,https://accounts.x.ai

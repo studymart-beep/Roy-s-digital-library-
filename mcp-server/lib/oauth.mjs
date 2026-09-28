@@ -26,8 +26,11 @@ import { createClient } from '@supabase/supabase-js';
 import { getStore } from './store.mjs';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
-const ACCESS_TTL_MS = 60 * 60 * 1000;
-const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// Long-lived sessions so ChatGPT / Claude / Grok rarely need reconnect.
+// Access token: 30 days. Refresh token: ~10 years (effectively "until revoked").
+// Clients that support refresh_token will stay connected without re-auth.
+const ACCESS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 // How long a spent refresh token is remembered purely so a replay of it can
 // be detected and treated as theft, rather than just becoming a generic
 // "invalid_grant" once it falls out of the store.
@@ -39,7 +42,6 @@ const SCOPE_LABELS = {
   'library:delete': 'Delete items and folders in your library',
   'library:share': 'Create and revoke public share links',
   openid: 'Confirm your identity',
-  offline_access: 'Keep the connection active with refresh tokens',
 };
 
 function b64url(buf) {
@@ -82,7 +84,7 @@ export function oauthMetadata(issuer) {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
-    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid', 'offline_access'],
+    scopes_supported: ['library:read', 'library:write', 'library:delete', 'library:share', 'openid'],
     revocation_endpoint_auth_methods_supported: ['none'],
     client_id_metadata_document_supported: true,
   };
@@ -114,8 +116,8 @@ export function validateRedirectUri(uri, allowedList) {
 }
 
 export function parseScopes(scopeStr) {
-  const allowed = new Set(['library:read', 'library:write', 'library:delete', 'library:share', 'openid', 'offline_access']);
-  const parts = String(scopeStr || 'library:read library:write library:share library:delete offline_access')
+  const allowed = new Set(['library:read', 'library:write', 'library:delete', 'library:share', 'openid']);
+  const parts = String(scopeStr || 'library:read library:write library:share library:delete')
     .split(/\s+/).filter(Boolean);
   const out = parts.filter((s) => allowed.has(s));
   if (!out.includes('library:read')) out.unshift('library:read');
@@ -479,7 +481,7 @@ button{margin-top:16px;width:100%;padding:12px;border:0;border-radius:24px;backg
 <p>Sign in to let <strong>${esc(clientId || 'this client')}</strong> access your library. It is asking for:</p>
 <ul class="scopes">${scopeHtml}</ul>
 ${err}
-<form method="POST" action="https://roy-s-digital-library.onrender.com/oauth/authorize">
+<form method="POST" action="/oauth/authorize">
 <input type="hidden" name="client_id" value="${esc(clientId)}"/>
 <input type="hidden" name="redirect_uri" value="${esc(redirectUri)}"/>
 <input type="hidden" name="state" value="${esc(state || '')}"/>

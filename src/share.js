@@ -53,7 +53,7 @@ export async function createShareLink(userId, item) {
     id: row.id,
     token,
     url: shareUrlForToken(token),
-    title: item.title,
+    title: prompt.title,
   };
 }
 
