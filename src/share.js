@@ -24,23 +24,24 @@ export function shareUrlForToken(token) {
 }
 
 /**
- * Create a share link for a prompt the current user owns.
- * Snapshots title + content at creation time.
+ * Create a share link for a prompt or library item the current user owns.
+ * Snapshots title + content at creation time (public never reads live tables).
+ * prompt_id column stores the source item id (prompt or library_item).
  */
-export async function createShareLink(userId, prompt) {
+export async function createShareLink(userId, item) {
   if (!CLOUD_ENABLED) throw new Error('Cloud not configured — sign in with Supabase to share');
   const supabase = getSupabase();
   if (!supabase || !userId) throw new Error('Not signed in');
-  if (!prompt?.id || !prompt?.title || !prompt?.content) throw new Error('Invalid prompt');
+  if (!item?.id || !item?.title || item.content == null) throw new Error('Invalid item');
 
   const token = randomToken();
   const row = {
     id: uid(),
     token,
     user_id: userId,
-    prompt_id: prompt.id,
-    title: prompt.title,
-    content: prompt.content,
+    prompt_id: item.id,
+    title: item.title,
+    content: String(item.content),
     created_at: Date.now(),
     revoked_at: null,
   };
@@ -52,7 +53,7 @@ export async function createShareLink(userId, prompt) {
     id: row.id,
     token,
     url: shareUrlForToken(token),
-    title: prompt.title,
+    title: item.title,
   };
 }
 
@@ -84,6 +85,23 @@ export async function revokeShare(userId, shareId) {
     .eq('id', shareId)
     .eq('user_id', userId);
   if (error) throw error;
+}
+
+/** List all active share links for the signed-in user (any item type). */
+export async function listAllShares(userId) {
+  const supabase = getSupabase();
+  if (!supabase || !userId) return [];
+  const { data, error } = await supabase
+    .from('shares')
+    .select('id, token, title, prompt_id, created_at, revoked_at')
+    .eq('user_id', userId)
+    .is('revoked_at', null)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(s => ({
+    ...s,
+    url: shareUrlForToken(s.token),
+  }));
 }
 
 /**

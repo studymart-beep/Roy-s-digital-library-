@@ -6,7 +6,7 @@
 import {
   openDB, seedIfEmpty, getAllFolders, getFolder, saveFolder, softDeleteFolderCascade,
   getAllPrompts, getPrompt, getFavorites, savePrompt, deletePrompt, restorePrompt, getDeletedPrompts,
-  getImagesByParent, saveImage, exportAll, importAll, getMeta, setMeta,
+  getImagesByParent, saveImage, exportAll, importAll, getMeta, setMeta, clearLocalUserData,
   getAllLibraryItems, getLibraryItem, saveLibraryItem, deleteLibraryItem, getLibraryItemsByFolder,
   getLinksForItem, saveItemLink, deleteItemLink, getAllItemLinks
 } from './db.js';
@@ -19,7 +19,7 @@ import {
 } from './sync.js';
 
 import {
-  createShareLink, listSharesForPrompt, revokeShare, shareUrlForToken
+  createShareLink, listSharesForPrompt, listAllShares, revokeShare, shareUrlForToken
 } from './share.js';
 
 // ── State ─────────────────────────────────────────────────────
@@ -163,6 +163,10 @@ async function initAuth() {
       state.showAuth = true;
       signedInBootstrapDone = false;
       stopRealtime();
+      state.currentFolderId = 'root';
+      state.path = [];
+      state.view = 'home';
+      try { await clearLocalUserData(); } catch (_) {}
       render();
     }
   });
@@ -229,6 +233,8 @@ async function onSignedIn() {
     // 4) Network listeners + render
     startRealtime(state.user.id, () => render());
     await fullSync(state.user.id, { catchUp: true });
+    // After account switch, local may be empty until pull — ensure root exists for empty accounts
+    await seedIfEmpty();
     initNetworkListeners(state.user.id, () => render());
     render();
   } catch (err) {
@@ -338,10 +344,24 @@ async function signInWithGoogle() {
 
 async function signOut() {
   const supabase = getSupabase();
-  await supabase.auth.signOut();
+  try {
+    await supabase.auth.signOut();
+  } catch (e) {
+    console.warn('signOut', e);
+  }
+  stopRealtime();
   state.user = null;
   state.showAuth = true;
-  stopRealtime();
+  state.currentFolderId = 'root';
+  state.path = [];
+  state.view = 'home';
+  try {
+    await clearLocalUserData();
+  } catch (e) {
+    console.warn('clearLocalUserData', e);
+  }
+  signedInBootstrapDone = false;
+  toast('Signed out — local cache cleared');
   render();
 }
 
@@ -506,7 +526,9 @@ async function renderHome() {
   const prompts = await getAllPrompts();
   const libItems = await getAllLibraryItems();
   const rootFolders = folders.filter(f => f.parentId === 'root');
-  const recent = [...prompts, ...libItems].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6);
+  const recent = [...prompts, ...libItems]
+    .sort((a, b) => (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0))
+    .slice(0, 8);
   const favs = [...prompts.filter(p => p.isFavorite), ...libItems.filter(i => i.isFavorite)].slice(0, 4);
 
   const main = $('#main');
@@ -534,7 +556,7 @@ async function renderHome() {
         ${rootFolders.length === 0 ? '<div class="empty-state"><p>Your library is empty. Tap the gold <strong>+</strong> button at the bottom to add a folder or prompt.</p></div>' : ''}
         ${rootFolders.map(f => renderFolderCard(f, folders, prompts)).join('')}
         ${favs.length ? `<div class="section-title">Favorites</div><div class="prompts-grid">${favs.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
-        ${recent.length ? `<div class="section-title">Recent</div><div class="prompts-grid">${recent.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
+        ${recent.length ? `<div class="section-title">Recent activity</div><div class="prompts-grid">${recent.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
       </div>
     </div>
   `;
@@ -620,6 +642,8 @@ function renderLibraryCard(item) {
           Copy
         </button>
         <button data-action="edit-lib">Edit</button>
+        <button data-action="move-lib">Move</button>
+        <button data-action="share-lib">Share</button>
         <button data-action="related-lib">Related</button>
         <button class="danger" data-action="delete-lib">Delete</button>
       </div>
@@ -634,17 +658,28 @@ async function renderFolderView() {
   const children = allFolders.filter(f => f.parentId === folderId);
   const prompts = allPrompts.filter(p => p.folderId === folderId).sort((a, b) => b.updatedAt - a.updatedAt);
   const libItems = (await getLibraryItemsByFolder(folderId)).sort((a, b) => b.updatedAt - a.updatedAt);
+  const images = await getImagesByParent(folderId);
 
   const main = $('#main');
-  const empty = prompts.length === 0 && libItems.length === 0 && children.length === 0;
+  const empty = prompts.length === 0 && libItems.length === 0 && children.length === 0 && images.length === 0;
   main.innerHTML = `
     ${children.length ? `<div class="section-title">Folders</div>${children.map(f => renderFolderCard(f, allFolders, allPrompts)).join('')}` : ''}
     ${prompts.length ? `<div class="section-title">Prompts (${prompts.length})</div><div class="prompts-grid">${prompts.map(p => renderPromptCard(p)).join('')}</div>` : ''}
     ${libItems.length ? `<div class="section-title">Library (${libItems.length})</div><div class="prompts-grid">${libItems.map(i => renderLibraryCard(i)).join('')}</div>` : ''}
+    ${images.length ? `<div class="section-title">Images (${images.length})</div>
+      <div class="images-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
+        ${images.map(img => {
+          const src = img.dataUrl || img.publicUrl || '';
+          return `<div class="image-card" data-image-id="${img.id}" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;">
+            ${src ? `<img src="${src.replace(/"/g, '&quot;')}" alt="${escapeHtml(img.name || 'image')}" style="width:100%;height:120px;object-fit:cover;display:block;"/>` : '<div style="height:120px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:12px;">No preview</div>'}
+            <div style="padding:8px 10px;font-size:12px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(img.name || 'Image')}</div>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
     ${empty ? `
       <div class="empty-state">
         <h3>This folder is empty</h3>
-        <p>Tap the gold + button to add a prompt, research, strategy, or subfolder</p>
+        <p>Tap the gold + button to add a prompt, research, strategy, image, or subfolder</p>
       </div>
     ` : ''}
   `;
@@ -772,6 +807,10 @@ function renderSettings() {
         <span class="settings-label">Recently Deleted</span>
         <span class="settings-value">Recover</span>
       </div>
+      <div class="settings-item" id="btn-share-links">
+        <span class="settings-label">My Share Links</span>
+        <span class="settings-value">Manage</span>
+      </div>
     </div>
 
     <div class="section-title">AI Connections (MCP)</div>
@@ -788,7 +827,7 @@ function renderSettings() {
         <span class="settings-label">How to connect (ChatGPT / Claude / Cursor)</span>
         <span class="settings-value" style="white-space:normal;line-height:1.45;">
           <strong>Hosted MCP (recommended)</strong><br>
-          Endpoint: <code>https://roy-s-digital-library.onrender.com/mcp</code><br>
+          Endpoint: <code>https://roys-s-digital-library-mcp.onrender.com/mcp</code><br>
           1. Add that URL as a remote / custom MCP connector<br>
           2. Complete OAuth sign-in when prompted<br>
           3. Use tools like search_library, create_library_item<br><br>
@@ -811,10 +850,10 @@ function renderSettings() {
   $('#copy-mcp-url')?.addEventListener('click', async () => {
     try {
       const { MCP_ENDPOINT } = await import('./config.js');
-      await copyText(MCP_ENDPOINT || 'https://roy-s-digital-library.onrender.com/mcp');
+      await copyText(MCP_ENDPOINT || 'https://roys-s-digital-library-mcp.onrender.com/mcp');
       toast('✓ MCP endpoint copied');
     } catch (e) {
-      await copyText('https://roys-s-digital-library.onrender.com/mcp');
+      await copyText('https://roys-s-digital-library-mcp.onrender.com/mcp');
       toast('✓ MCP endpoint copied');
     }
   });
@@ -847,6 +886,7 @@ function renderSettings() {
     renderSettings();
   });
   $('#btn-recently-deleted')?.addEventListener('click', renderRecentlyDeleted);
+  $('#btn-share-links')?.addEventListener('click', renderShareLinks);
 }
 
 async function renderRecentlyDeleted() {
@@ -901,6 +941,55 @@ function bindFolderCards() {
     });
   });
 }
+
+async function renderShareLinks() {
+  state.view = 'share-links';
+  const main = $('#main');
+  if (!state.user) {
+    main.innerHTML = `<div class="empty-state"><h3>Sign in required</h3><p>Share links are stored in your cloud account.</p></div>`;
+    return;
+  }
+  main.innerHTML = `<div class="section-title">My Share Links</div><p style="color:var(--text-muted);font-size:14px;margin:0 0 16px;">Active public links. Copy again or revoke anytime.</p><div id="share-links-list">Loading…</div>`;
+  try {
+    const shares = await listAllShares(state.user.id);
+    const list = $('#share-links-list');
+    if (!shares.length) {
+      list.innerHTML = `<div class="empty-state"><h3>No active share links</h3><p>Open any prompt or library item and tap Share.</p></div>`;
+      return;
+    }
+    list.innerHTML = shares.map(s => `
+      <div class="settings-group" style="margin-bottom:12px;">
+        <div class="settings-item" style="flex-direction:column;align-items:stretch;gap:8px;">
+          <div style="font-weight:600;">${escapeHtml(s.title || 'Untitled')}</div>
+          <div style="font-size:12px;color:var(--text-muted);word-break:break-all;">${escapeHtml(s.url)}</div>
+          <div style="font-size:12px;color:var(--text-muted);">Created ${s.created_at ? new Date(s.created_at).toLocaleString() : '—'}</div>
+          <div class="btn-row" style="margin-top:4px;">
+            <button class="btn btn-secondary btn-sm" data-copy-share="${escapeHtml(s.url)}">Copy link</button>
+            <button class="btn btn-danger btn-sm" data-revoke-share="${s.id}">Revoke</button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('[data-copy-share]').forEach(btn => {
+      btn.addEventListener('click', () => copyText(btn.dataset.copyShare));
+    });
+    list.querySelectorAll('[data-revoke-share]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Revoke this share link? Anyone with the link will lose access.')) return;
+        try {
+          await revokeShare(state.user.id, btn.dataset.revokeShare);
+          toast('Share link revoked');
+          renderShareLinks();
+        } catch (e) {
+          toast(e.message || 'Revoke failed');
+        }
+      });
+    });
+  } catch (e) {
+    $('#share-links-list').innerHTML = `<p style="color:var(--danger);">${escapeHtml(e.message || 'Failed to load shares')}</p>`;
+  }
+}
+
 
 async function openFolderActions(folderId) {
   if (folderId === 'root') return toast('Root folder cannot be changed');
@@ -1009,7 +1098,12 @@ function bindPromptCards() {
     block.querySelector('[data-action="copy"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
       const p = await getPrompt(id);
-      if (p) copyText(p.content);
+      if (p) {
+        await copyText(p.content);
+        p.lastUsedAt = Date.now();
+        p.useCount = (p.useCount || 0) + 1;
+        await savePrompt(p);
+      }
     });
     block.querySelector('[data-action="edit"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1055,7 +1149,25 @@ function bindLibraryCards() {
     block.querySelector('[data-action="copy-lib"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
       const item = await getLibraryItem(id);
-      if (item) copyText(item.content);
+      if (item) {
+        await copyText(item.content);
+        item.lastUsedAt = Date.now();
+        item.useCount = (item.useCount || 0) + 1;
+        await saveLibraryItem(item);
+      }
+    });
+    block.querySelector('[data-action="move-lib"]')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const item = await getLibraryItem(id);
+      if (item) openMoveLibraryItem(item);
+    });
+    block.querySelector('[data-action="share-lib"]')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const item = await getLibraryItem(id);
+      if (item) openShareModal(item);
+    });
+    block.querySelector('[data-action="expand"]')?.addEventListener('click', (e) => {
+      e.currentTarget.classList.toggle('expanded');
     });
     block.querySelector('[data-action="edit-lib"]')?.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -1141,7 +1253,7 @@ async function openShareModal(prompt) {
     : '<p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">No active share links yet.</p>';
 
   openModal(`
-    <div class="modal-title">Share prompt</div>
+    <div class="modal-title">Share link</div>
     <p style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;line-height:1.45;">
       <strong>${escapeHtml(prompt.title)}</strong><br>
       Anyone with the link can view and copy this prompt. They cannot edit your library.
@@ -1206,6 +1318,32 @@ async function openShareModal(prompt) {
   });
 }
 
+
+async function openMoveLibraryItem(item) {
+  const folders = await getAllFolders();
+  const options = folders.map(f =>
+    `<option value="${f.id}" ${f.id === item.folderId ? 'selected' : ''}>${escapeHtml(f.name)}</option>`
+  ).join('');
+  openModal(`
+    <div class="modal-title">Move ${escapeHtml(itemTypeLabel(item.itemType || 'note'))}</div>
+    <label class="field-label">Folder</label>
+    <select id="move-lib-folder">${options}</select>
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn btn-secondary" id="cancel-ml">Cancel</button>
+      <button class="btn btn-primary" id="save-ml">Move</button>
+    </div>
+  `);
+  $('#cancel-ml').addEventListener('click', closeModal);
+  $('#save-ml').addEventListener('click', async () => {
+    item.folderId = $('#move-lib-folder').value;
+    item.updatedAt = Date.now();
+    await saveLibraryItem(item);
+    closeModal();
+    toast('Moved');
+    if (state.user && navigator.onLine) fullSync(state.user.id);
+    render();
+  });
+}
 
 async function openMovePrompt(prompt) {
   const folders = await getAllFolders();
