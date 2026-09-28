@@ -392,6 +392,24 @@ export async function clearAllPending() {
   });
 }
 
+/**
+ * Wipe all local library data for account switch.
+ * Cloud remains source of truth — next sign-in pulls that user's data only.
+ * Does not delete the IndexedDB database itself (keeps connection stable).
+ */
+export async function clearLocalUserData() {
+  await openDB();
+  const names = ['folders', 'prompts', 'images', 'library_items', 'item_links', 'pending', 'meta'];
+  const existing = names.filter((n) => db.objectStoreNames.contains(n));
+  if (!existing.length) return;
+  await new Promise((resolve, reject) => {
+    const t = db.transaction(existing, 'readwrite');
+    for (const n of existing) t.objectStore(n).clear();
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+  });
+}
+
 export async function getMeta(key) {
   const item = await getOne('meta', key);
   return item ? item.value : null;
