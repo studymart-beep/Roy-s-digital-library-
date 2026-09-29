@@ -481,7 +481,7 @@ button{margin-top:16px;width:100%;padding:12px;border:0;border-radius:24px;backg
 <p>Sign in to let <strong>${esc(clientId || 'this client')}</strong> access your library. It is asking for:</p>
 <ul class="scopes">${scopeHtml}</ul>
 ${err}
-<form method="POST" action="/oauth/authorize">
+<form method="POST" action="/oauth/authorize" accept-charset="UTF-8" autocomplete="on">
 <input type="hidden" name="client_id" value="${esc(clientId)}"/>
 <input type="hidden" name="redirect_uri" value="${esc(redirectUri)}"/>
 <input type="hidden" name="state" value="${esc(state || '')}"/>

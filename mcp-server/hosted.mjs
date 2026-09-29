@@ -341,7 +341,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, html, reqId, {
         'Content-Type': 'text/html; charset=utf-8',
         // form-action 'self' only — listing absolute origin + resolved absolute form URL breaks Chrome
-        'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'self'",
+        'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action *; base-uri 'self'",
       });
     }
 
@@ -389,7 +389,7 @@ const server = http.createServer(async (req, res) => {
         });
         return send(res, 401, html, reqId, {
           'Content-Type': 'text/html; charset=utf-8',
-          'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'self'",
+          'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action *; base-uri 'self'",
         });
       }
     }
