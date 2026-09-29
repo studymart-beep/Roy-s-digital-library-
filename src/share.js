@@ -28,6 +28,29 @@ export function shareUrlForToken(token) {
  * Snapshots title + content at creation time (public never reads live tables).
  * prompt_id column stores the source item id (prompt or library_item).
  */
+/** Flatten library JSON types to readable plain text for public share pages. */
+export function shareablePlainText(item) {
+  const raw = item?.content;
+  if (raw == null) return '';
+  const s = String(raw);
+  try {
+    const data = JSON.parse(s);
+    if (data && data.kind === 'document') return String(data.body || '');
+    if (data && data.kind === 'presentation' && Array.isArray(data.slides)) {
+      return data.slides.map((sl, i) => {
+        const bullets = (sl.bullets || []).map((b) => `• ${b}`).join('\n');
+        return `Slide ${i + 1}: ${sl.title || ''}\n${sl.body || ''}${bullets ? '\n' + bullets : ''}`;
+      }).join('\n\n');
+    }
+    if (data && data.kind === 'spreadsheet' && Array.isArray(data.columns) && Array.isArray(data.rows)) {
+      const lines = [data.columns.join('\t')];
+      for (const r of data.rows) lines.push(data.columns.map((_, i) => r[i] ?? '').join('\t'));
+      return lines.join('\n');
+    }
+  } catch (_) {}
+  return s;
+}
+
 export async function createShareLink(userId, item) {
   if (!CLOUD_ENABLED) throw new Error('Cloud not configured — sign in with Supabase to share');
   const supabase = getSupabase();
@@ -41,7 +64,7 @@ export async function createShareLink(userId, item) {
     user_id: userId,
     prompt_id: item.id,
     title: item.title,
-    content: String(item.content),
+    content: shareablePlainText(item),
     created_at: Date.now(),
     revoked_at: null,
   };

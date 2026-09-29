@@ -32,6 +32,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { canUseSupabaseStore, loadSupabaseStoreRaw, saveSupabaseStoreRaw } from './store-supabase.mjs';
 
 const DEFAULT_PATH =
   process.env.MCP_OAUTH_STORE_PATH || path.join(process.cwd(), 'data', 'oauth-store.json');
@@ -170,6 +171,27 @@ class Store {
       console.error('[oauth-store] load failed, starting empty:', err.message);
       this.state = emptyState();
     }
+    // Free-tier Render: no disk — hydrate from Supabase if configured
+    if (canUseSupabaseStore() && this.key) {
+      this._hydrateFromSupabase().catch((e) =>
+        console.error('[oauth-store] supabase hydrate failed:', e.message)
+      );
+    }
+  }
+
+  async _hydrateFromSupabase() {
+    try {
+      const raw = await loadSupabaseStoreRaw();
+      if (!raw) return;
+      if (isEncryptedEnvelope(raw)) {
+        this.state = { ...emptyState(), ...decryptState(this.key, raw) };
+        console.error('[oauth-store] Hydrated OAuth sessions from Supabase (survives redeploy without disk).');
+      } else if (typeof raw === 'object') {
+        this.state = { ...emptyState(), ...raw };
+      }
+    } catch (e) {
+      console.error('[oauth-store] supabase hydrate:', e.message);
+    }
   }
 
   _scheduleFlush() {
@@ -203,6 +225,16 @@ class Store {
       try { fs.chmodSync(this.filePath, 0o600); } catch { /* best-effort on platforms without chmod */ }
     } catch (err) {
       console.error('[oauth-store] flush failed:', err.message);
+    }
+    if (canUseSupabaseStore() && this.key) {
+      try {
+        const envelope = encryptState(this.key, this.state);
+        saveSupabaseStoreRaw(envelope).catch((e) =>
+          console.error('[oauth-store] supabase flush failed:', e.message)
+        );
+      } catch (e) {
+        console.error('[oauth-store] supabase flush prep failed:', e.message);
+      }
     }
   }
 

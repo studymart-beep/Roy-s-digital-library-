@@ -7,7 +7,7 @@ import {
   openDB, seedIfEmpty, getAllFolders, getFolder, saveFolder, softDeleteFolderCascade,
   getAllPrompts, getPrompt, getFavorites, savePrompt, deletePrompt, restorePrompt, getDeletedPrompts,
   getImagesByParent, saveImage, exportAll, importAll, getMeta, setMeta, clearLocalUserData,
-  getAllLibraryItems, getLibraryItem, saveLibraryItem, deleteLibraryItem, getLibraryItemsByFolder,
+  getAllLibraryItems, getLibraryItem, saveLibraryItem, deleteLibraryItem, getLibraryItemsByFolder, getDeletedLibraryItems, restoreLibraryItem,
   getLinksForItem, saveItemLink, deleteItemLink, getAllItemLinks
 } from './db.js';
 
@@ -19,7 +19,7 @@ import {
 } from './sync.js';
 
 import {
-  createShareLink, listSharesForPrompt, listAllShares, revokeShare, shareUrlForToken
+  createShareLink, listSharesForPrompt, listAllShares, revokeShare, shareUrlForToken, shareablePlainText
 } from './share.js';
 
 // ── State ─────────────────────────────────────────────────────
@@ -576,10 +576,11 @@ function renderAuth() {
   const main = $('#main');
   main.innerHTML = `
     <div class="auth-screen">
-      <div class="auth-card">
+      <div class="auth-card auth-card-premium">
+        <div class="auth-badge">Private workspace</div>
         <img class="auth-logo" src="logo.png" alt="Roy's Digital Library" />
         <h1>Roy's Digital Library</h1>
-        <p class="auth-sub">Your personal AI command center.</p>
+        <p class="auth-sub">Your premium knowledge workspace for digital products &amp; research.</p>
 
         <div class="form-group">
           <label>Email</label>
@@ -590,24 +591,19 @@ function renderAuth() {
           <input type="password" id="auth-password" placeholder="••••••••" autocomplete="current-password" />
         </div>
         <div id="auth-error" class="auth-error hidden"></div>
-        <div class="btn-row" style="margin-top:8px;">
+        <div class="btn-row" style="margin-top:12px;">
           <button class="btn btn-primary" id="btn-signin" style="flex:1;">Sign In</button>
         </div>
         <div class="btn-row">
           <button class="btn btn-secondary" id="btn-signup" style="flex:1;">Create Account</button>
         </div>
-        <p style="text-align:center;margin:10px 0 0;">
-          <button type="button" id="btn-forgot" style="background:none;border:0;color:var(--accent,#b8901f);font-size:13px;cursor:pointer;text-decoration:underline;">Forgot password?</button>
+        <p class="auth-forgot-wrap">
+          <button type="button" id="btn-forgot" class="auth-link-btn">Forgot password?</button>
         </p>
-        <div class="auth-divider"><span>or</span></div>
-        <button class="btn btn-secondary" id="btn-google" style="width:100%;">
-          Continue with Google
-        </button>
         ${!CLOUD_ENABLED ? `
-          <p style="margin-top:20px;font-size:13px;color:var(--warning);text-align:center;line-height:1.4;">
+          <p class="auth-offline-note">
             Cloud is not configured yet.<br>
-            Edit <code>src/config.js</code> with your Supabase keys,<br>
-            then refresh. You can still use the app offline.
+            Edit <code>src/config.js</code> with your Supabase keys.
           </p>
           <button class="btn btn-secondary" id="btn-skip-auth" style="width:100%;margin-top:12px;">
             Continue Offline
@@ -627,7 +623,7 @@ function renderAuth() {
     try {
       await signIn($('#auth-email').value.trim(), $('#auth-password').value);
     } catch (e) {
-      showErr(e.message || 'Sign in failed');
+      showErr(friendlyAuthError(e.message) || 'Sign in failed');
     }
   });
   $('#btn-signup')?.addEventListener('click', async () => {
@@ -636,7 +632,7 @@ function renderAuth() {
       toast('Check your email to confirm, then sign in');
       showErr('Confirmation email sent. Open the link in your inbox, then sign in.');
     } catch (e) {
-      showErr(e.message || 'Sign up failed');
+      showErr(friendlyAuthError(e.message) || 'Sign up failed');
     }
   });
   $('#btn-forgot')?.addEventListener('click', async () => {
@@ -650,14 +646,7 @@ function renderAuth() {
       toast('Password reset email sent');
       showErr('Check your inbox for the reset link. After resetting, sign in here.');
     } catch (e) {
-      showErr(e.message || 'Could not send reset email');
-    }
-  });
-  $('#btn-google')?.addEventListener('click', async () => {
-    try {
-      await signInWithGoogle();
-    } catch (e) {
-      showErr(e.message || 'Google sign-in failed');
+      showErr(friendlyAuthError(e.message) || 'Could not send reset email');
     }
   });
   $('#btn-skip-auth')?.addEventListener('click', () => {
@@ -727,6 +716,11 @@ async function renderHome() {
   const prompts = await getAllPrompts();
   const libItems = await getAllLibraryItems();
   const rootFolders = folders.filter(f => f.parentId === 'root');
+  let homeImages = [];
+  try {
+    const { getAllImagesRaw } = await import('./db.js');
+    homeImages = (await getAllImagesRaw()).filter(i => !i.deletedAt).slice(0, 12);
+  } catch (_) {}
   const sortMode = await getSortMode();
   const recent = sortItems([...prompts, ...libItems], sortMode === 'newest' ? 'recent_used' : sortMode).slice(0, 8);
   const favs = [...prompts.filter(p => p.isFavorite), ...libItems.filter(i => i.isFavorite)].slice(0, 4);
@@ -757,6 +751,16 @@ async function renderHome() {
         ${rootFolders.map(f => renderFolderCard(f, folders, prompts)).join('')}
         ${sortControlHtml(sortMode)}${favs.length ? `<div class="section-title">Favorites</div><div class="prompts-grid">${favs.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
         ${recent.length ? `<div class="section-title">Recent activity</div><div class="prompts-grid">${recent.map(p => p.itemType ? renderLibraryCard(p) : renderPromptCard(p)).join('')}</div>` : ''}
+        ${homeImages.length ? `<div class="section-title">Images (${homeImages.length})</div>
+          <div class="images-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px;margin-bottom:20px;">
+            ${homeImages.map(img => {
+              const src = img.dataUrl || img.publicUrl || '';
+              return `<div class="image-card" data-image-id="${img.id}" style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;overflow:hidden;">
+                ${src ? `<img src="${String(src).replace(/"/g, '&quot;')}" alt="${escapeHtml(img.name || 'image')}" style="width:100%;height:100px;object-fit:cover;display:block;"/>` : '<div style="height:100px;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:11px;padding:8px;text-align:center;">Synced image — open folder to load</div>'}
+                <div style="padding:6px 8px;font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(img.name || 'Image')}</div>
+              </div>`;
+            }).join('')}
+          </div>` : ''}
       </div>
     </div>
   `;
@@ -1099,29 +1103,39 @@ function renderSettings() {
 }
 
 async function renderRecentlyDeleted() {
-  const deleted = await getDeletedPrompts();
+  const deletedPrompts = await getDeletedPrompts();
+  const deletedLib = await getDeletedLibraryItems();
+  const deleted = [
+    ...deletedPrompts.map(p => ({ ...p, _kind: 'prompt' })),
+    ...deletedLib.map(i => ({ ...i, _kind: 'library' })),
+  ].sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
   const main = $('#main');
   main.innerHTML = `
     <div class="section-title">Recently Deleted (${deleted.length})</div>
     ${deleted.length === 0 ? '<div class="empty-state"><p>Nothing in the trash</p></div>' : ''}
-    ${deleted.map(p => `
-      <div class="prompt-block" data-prompt-id="${p.id}">
+    ${deleted.map(p => {
+      const preview = String(p.content || '').replace(/\s+/g, ' ').slice(0, 120);
+      return `
+      <div class="prompt-block" data-del-id="${p.id}" data-del-kind="${p._kind || 'prompt'}">
         <div class="prompt-header">
-          <div class="prompt-title">${escapeHtml(p.title)}</div>
+          <div class="prompt-title">${escapeHtml(p.title || 'Untitled')} ${p._kind === 'library' ? '<span class="type-badge">item</span>' : ''}</div>
         </div>
-        <div class="prompt-body">${escapeHtml(p.content.slice(0, 120))}…</div>
+        <div class="prompt-body">${escapeHtml(preview)}${preview.length >= 120 ? '…' : ''}</div>
         <div class="prompt-actions">
           <button data-action="restore" style="color:var(--accent)">Restore</button>
           <button class="danger" data-action="purge">Delete Forever</button>
         </div>
-      </div>
-    `).join('')}
+      </div>`;
+    }).join('')}
     <button class="btn btn-secondary" id="back-settings" style="margin-top:16px;width:100%;">Back to Settings</button>
   `;
   $all('[data-action="restore"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const id = btn.closest('.prompt-block').dataset.promptId;
-      await restorePrompt(id);
+      const block = btn.closest('.prompt-block');
+      const id = block.dataset.delId;
+      const kind = block.dataset.delKind;
+      if (kind === 'library') await restoreLibraryItem(id);
+      else await restorePrompt(id);
       toast('Restored');
       if (state.user) fullSync(state.user.id);
       renderRecentlyDeleted();
@@ -1129,8 +1143,11 @@ async function renderRecentlyDeleted() {
   });
   $all('[data-action="purge"]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const id = btn.closest('.prompt-block').dataset.promptId;
-      await deletePrompt(id, { soft: false });
+      const block = btn.closest('.prompt-block');
+      const id = block.dataset.delId;
+      const kind = block.dataset.delKind;
+      if (kind === 'library') await deleteLibraryItem(id, { soft: false });
+      else await deletePrompt(id, { soft: false });
       toast('Permanently deleted');
       renderRecentlyDeleted();
     });
@@ -1361,13 +1378,9 @@ function bindLibraryCards() {
       if (!item) return;
       if (item.itemType === 'spreadsheet') {
         const { columns, rows } = parseSpreadsheetContent(item.content);
-        const csv = [columns.join(','), ...rows.map((r) => r.map((c) => {
-          const s = String(c ?? '');
-          return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-        }).join(','))].join('\n');
-        await copyText(csv);
+        await copyText(sheetToCsv(columns, rows));
       } else {
-        await copyText(item.content);
+        await copyText(typeof shareablePlainText === 'function' ? shareablePlainText(item) : item.content);
       }
       item.lastUsedAt = Date.now();
       item.useCount = (item.useCount || 0) + 1;
@@ -1418,12 +1431,18 @@ function bindLibraryCards() {
       `);
       $('#cancel-del-lib').addEventListener('click', closeModal);
       $('#confirm-del-lib').addEventListener('click', async () => {
-        await deleteLibraryItem(id);
-        await cleanupLinksForItem(id);
-        closeModal();
-        toast('Deleted');
-        if (state.user && navigator.onLine) fullSync(state.user.id);
-        render();
+        try {
+          await deleteLibraryItem(id, { soft: true });
+          try { await cleanupLinksForItem(id); } catch (_) {}
+          closeModal();
+          toast('Moved to Recently Deleted');
+          if (state.user && navigator.onLine) {
+            try { await fullSync(state.user.id); } catch (_) {}
+          }
+          await render();
+        } catch (e) {
+          toast(e.message || 'Delete failed');
+        }
       });
     });
     block.querySelector('[data-action="toggle-fav-lib"]')?.addEventListener('click', async (e) => {

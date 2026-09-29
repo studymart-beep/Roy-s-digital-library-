@@ -338,7 +338,7 @@ const server = http.createServer(async (req, res) => {
         scope: q.get('scope'),
         codeChallenge: q.get('code_challenge'),
       });
-      return send(res, 200, html, reqId, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'" });
+      return send(res, 200, html, reqId, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': `default-src 'self'; style-src 'unsafe-inline'; form-action 'self' ${PUBLIC_URL}` });
     }
 
     if (url.pathname === '/oauth/authorize' && req.method === 'POST') {

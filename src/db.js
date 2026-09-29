@@ -289,6 +289,11 @@ export async function getAllLibraryItems() {
   return all.filter(i => !i.deletedAt);
 }
 
+export async function getDeletedLibraryItems() {
+  const all = await getAll('library_items');
+  return all.filter(i => i.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
 export async function getLibraryItem(id) {
   const i = await getOne('library_items', id);
   return i && !i.deletedAt ? i : null;
