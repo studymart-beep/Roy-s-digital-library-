@@ -338,7 +338,11 @@ const server = http.createServer(async (req, res) => {
         scope: q.get('scope'),
         codeChallenge: q.get('code_challenge'),
       });
-      return send(res, 200, html, reqId, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': `default-src 'self'; style-src 'unsafe-inline'; form-action 'self' ${PUBLIC_URL}` });
+      return send(res, 200, html, reqId, {
+        'Content-Type': 'text/html; charset=utf-8',
+        // form-action 'self' only — listing absolute origin + resolved absolute form URL breaks Chrome
+        'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'self'",
+      });
     }
 
     if (url.pathname === '/oauth/authorize' && req.method === 'POST') {
@@ -383,7 +387,10 @@ const server = http.createServer(async (req, res) => {
           codeChallenge: body.code_challenge,
           error: err.message || 'Login failed',
         });
-        return send(res, 401, html, reqId, { 'Content-Type': 'text/html; charset=utf-8' });
+        return send(res, 401, html, reqId, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'self'",
+        });
       }
     }
 
